@@ -186,7 +186,7 @@ class SourceCraftAPI:
     От него наследуются остальные клиенты.
     """
 
-    BASE_URL_SETTING: str = ""
+    BASE_URL_SETTING_NAME: str = ""
     RATE_LIMIT_KEY_PREFIX: str = ""
 
     def __init__(
@@ -197,14 +197,15 @@ class SourceCraftAPI:
         rate_limiter: RateLimiter | None = None,
         max_pages: int | None = None,
     ) -> None:
-        if not self.BASE_URL_SETTING:
+        base_url = getattr(settings, self.BASE_URL_SETTING_NAME, "")
+        if not base_url:
             raise NotImplementedError(
-                f"{type(self).__name__} должен задать BASE_URL_SETTING"
+                f"{type(self).__name__} должен задать BASE_URL_SETTING_NAME"
             )
         if not token:
             token = settings.SOURCECRAFT_API_TOKEN
         self.access_token = token
-        self.base_url = self.BASE_URL_SETTING.rstrip("/")
+        self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.session = session or _get_shared_session()
         self.rate_limiter: RateLimiter = rate_limiter or _get_rate_limiter(
@@ -367,7 +368,7 @@ class SourceCraftAPI:
     def close(self) -> None:
         """Закрывает HTTP-сессию"""
 
-        if not self._owns_session:
+        if self._owns_session:
             self.session.close()
 
     def __enter__(self) -> "SourceCraftAPI":
@@ -380,7 +381,7 @@ class SourceCraftAPI:
 class SourceCraftClient(SourceCraftAPI):
     """Клиент API SourceCraft"""
 
-    BASE_URL_SETTING = settings.SOURCECRAFT_API_BASE_URL
+    BASE_URL_SETTING_NAME = "SOURCECRAFT_API_BASE_URL"
     RATE_LIMIT_KEY_PREFIX = "sourcecraft:rl"
 
     def iter_public_repositories(
@@ -600,7 +601,7 @@ class SourceCraftClient(SourceCraftAPI):
 class SourceCraftFileClient(SourceCraftAPI):
     """Клиент файлового ресурса SourceCraft (сырые файлы репозитория)"""
 
-    BASE_URL_SETTING = settings.SOURCECRAFT_API_FILE_BASE_URL
+    BASE_URL_SETTING_NAME = "SOURCECRAFT_API_FILE_BASE_URL"
     RATE_LIMIT_KEY_PREFIX = "sourcecraft:file-rl"
 
     def _accept_header(self) -> str:
