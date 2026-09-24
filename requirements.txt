@@ -1,0 +1,13 @@
+Django==6.1.1
+djangorestframework==3.18.1
+django-environ==0.14.0
+django-redis==7.0.0
+cryptography==50.0.0
+psycopg2-binary==2.9.13
+psycogreen==1.0.2
+gevent==26.9.0
+gunicorn==26.2.0
+celery==5.6.3
+redis==8.1.0
+requests==2.34.2
+whitenoise==6.12.0

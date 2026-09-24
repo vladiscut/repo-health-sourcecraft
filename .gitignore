@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.sqlite3
+.env
+staticfiles/
+.python-version
+.ruff_cache/
+*.log
+celerybeat-schedule
+celerybeat-schedule.*
+PLAN.md
+SPRINT.md
+8. Yandex Cloud.pdf
+SCS_API_1.0.0_draft.pdf

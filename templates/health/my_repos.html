@@ -1,0 +1,85 @@
+{% extends "health/base.html" %}
+{% block title %}Мои репозитории · Repo Health{% endblock %}
+{% block content %}
+<h1>Мои репозитории</h1>
+<p class="lead">
+    Репозитории SourceCraft, доступные вашему токену.
+    {% if profile.sourcecraft_username %}Логин: {{ profile.sourcecraft_username }}.{% endif %}
+</p>
+
+<section class="panel">
+    <h2>Токен SourceCraft</h2>
+    {% if has_pat %}
+    <p class="status ok">Токен подключён{% if profile.pat_mask %} · {{ profile.pat_mask }}{% endif %}</p>
+    <p class="muted">Я ID подтверждает личность. Приватные репозитории SourceCraft читаются по этому PAT.</p>
+    <div class="toolbar">
+        <form method="post" action="{% url 'health:refresh-my-repos' %}">
+            {% csrf_token %}
+            <button type="submit">Обновить список</button>
+        </form>
+        <form method="post" action="{% url 'health:revoke-pat' %}" onsubmit="return confirm('Отозвать токен и очистить список репозиториев?')">
+            {% csrf_token %}
+            <button type="submit" class="danger">Отозвать токен</button>
+        </form>
+    </div>
+    <details class="replace-pat">
+        <summary>Заменить токен</summary>
+        <form method="post" action="{% url 'health:save-pat' %}" class="toolbar">
+            {% csrf_token %}
+            <input type="password" name="sourcecraft_pat" placeholder="Новый PAT SourceCraft" autocomplete="off" aria-label="Новый PAT SourceCraft">
+            <button type="submit">Сохранить</button>
+        </form>
+    </details>
+    {% else %}
+    <p class="status off">Токен не задан</p>
+    <p class="muted">Чтобы увидеть свои репозитории, вставьте персональный токен SourceCraft.</p>
+    <form method="post" action="{% url 'health:save-pat' %}" class="toolbar">
+        {% csrf_token %}
+        <input type="password" name="sourcecraft_pat" placeholder="PAT SourceCraft" autocomplete="off" aria-label="PAT SourceCraft">
+        <button type="submit">Сохранить токен</button>
+    </form>
+    {% endif %}
+</section>
+
+<table class="table">
+    <thead>
+        <tr>
+            <th>Репозиторий</th>
+            <th>Видимость</th>
+            <th>Язык</th>
+            <th>Score</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in items %}
+        <tr>
+            <td>
+                <a href="{% url 'health:repo-detail' item.repo.org_slug item.repo.repo_slug %}">
+                    {{ item.repo.org_slug }}/{{ item.repo.repo_slug }}
+                </a>
+                <div class="muted">{{ item.repo.description|default:""|truncatechars:140 }}</div>
+            </td>
+            <td>{{ item.repo.visibility }}</td>
+            <td>{{ item.repo.language|default:"—" }}</td>
+            <td>
+                {% if item.score %}
+                <span class="score {{ item.score.level }}">{{ item.score.total }}</span>
+                {% else %}
+                <span class="muted">нет данных</span>
+                {% endif %}
+            </td>
+            <td>
+                <form method="post" action="{% url 'health:analyze-my-repo' item.repo.org_slug item.repo.repo_slug %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="{% url 'health:my-repos' %}">
+                    <button type="submit">Анализировать</button>
+                </form>
+            </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5">Пока нет репозиториев. Сохраните PAT и обновите список.</td></tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}

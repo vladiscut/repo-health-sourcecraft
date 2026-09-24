@@ -1,0 +1,98 @@
+{% extends "health/base.html" %}
+{% block title %}{{ repo.org_slug }}/{{ repo.repo_slug }} · Repo Health{% endblock %}
+{% block content %}
+<p class="crumb"><a href="{% url 'health:repo-list' %}">← К списку</a></p>
+<div class="hero">
+    <div>
+        <h1>{{ repo.org_slug }}/{{ repo.repo_slug }}</h1>
+        <p class="lead">{{ repo.description }}</p>
+        <p class="muted">
+            {{ repo.language|default:"язык не указан" }}
+            · рейтинг <b class="rating">{{ repo.rating_display }}</b>
+            {% if repo.percentile_display %} · {{ repo.percentile_display }}{% endif %}
+            · 👍 {{ repo.likes }} · ❤️ {{ repo.hearts }} · 💎 {{ repo.diamonds }}
+            · {{ repo.forks }} форков
+            {% if repo.url %}
+            · <a href="{{ repo.url }}">SourceCraft</a>
+            {% endif %}
+        </p>
+    </div>
+    {% if score %}
+    <div class="hero-score">
+        <div class="score big {{ score.level }}">{{ score.total }}</div>
+        <div class="muted">Repo Health Score</div>
+    </div>
+    {% else %}
+    <div class="hero-score">
+        <div class="muted">Score пока нет — скан метрик не подключён</div>
+    </div>
+    {% endif %}
+</div>
+
+<div class="toolbar">
+    {% if can_analyze %}
+    <form method="post" action="{% url 'health:analyze-my-repo' repo.org_slug repo.repo_slug %}" onsubmit="this.querySelector('button').classList.add('busy')">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{% url 'health:repo-detail' repo.org_slug repo.repo_slug %}">
+        <button type="submit">Запустить анализ</button>
+        <span class="loader" aria-hidden="true"></span>
+    </form>
+    {% else %}
+    <form method="post" action="{% url 'health:repo-rescan' repo.org_slug repo.repo_slug %}" onsubmit="this.querySelector('button').classList.add('busy')">
+        {% csrf_token %}
+        <button type="submit">Обновить сейчас</button>
+        <span class="loader" aria-hidden="true"></span>
+    </form>
+    {% endif %}
+    <a class="btn ghost" href="{% url 'health:repo-export' repo.org_slug repo.repo_slug 'md' %}">Скачать Markdown</a>
+    <a class="btn ghost" href="{% url 'health:repo-export' repo.org_slug repo.repo_slug 'pdf' %}">Скачать PDF</a>
+</div>
+
+{% if score %}
+<section>
+    <h2>Почему такой балл</h2>
+    <ul class="bars">
+        {% for name, value in score.categories %}
+        <li>
+            <span>{{ name }}</span>
+            <div class="bar"><i style="width: {{ value }}%"></i></div>
+            <b>{{ value }}</b>
+        </li>
+        {% endfor %}
+    </ul>
+</section>
+{% endif %}
+
+<section>
+    <h2>Находки и рекомендации</h2>
+    {% if findings %}
+    <ul class="findings">
+        {% for finding in findings %}
+        <li class="finding {{ finding.severity }}">
+            <strong>{{ finding.title }}</strong>
+            <span class="tag">{{ finding.category }} · {{ finding.severity }}</span>
+            <p>{{ finding.detail }}</p>
+            {% if finding.recommendation %}<p class="rec">{{ finding.recommendation }}</p>{% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Находок нет — либо скан ещё не считал Score, либо проблем не найдено.</p>
+    {% endif %}
+</section>
+
+{% if history %}
+<section>
+    <h2>История проверок</h2>
+    <ol class="history">
+        {% for item in history %}
+        <li>
+            {{ item.finished_at|date:"d.m.Y H:i"|default:"—" }}
+            —
+            {% if item.total is not None %}{{ item.total }}{% else %}нет данных{% endif %}
+        </li>
+        {% endfor %}
+    </ol>
+</section>
+{% endif %}
+{% endblock %}

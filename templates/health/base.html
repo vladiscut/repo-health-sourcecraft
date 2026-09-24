@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Repo Health{% endblock %}</title>
+    {% load static %}
+    <link rel="stylesheet" href="{% static 'health/app.css' %}">
+</head>
+<body>
+    <header class="top">
+        <a class="brand" href="{% url 'health:repo-list' %}">Repo Health</a>
+        <nav class="nav">
+            <a href="{% url 'health:repo-list' %}">Рейтинг</a>
+            {% if user.is_authenticated %}
+            <a href="{% url 'health:my-repos' %}">Мои репозитории</a>
+            <span class="muted">{{ user.get_username }}</span>
+            <form method="post" action="{% url 'health:logout' %}" class="inline">
+                {% csrf_token %}
+                <button type="submit" class="linkish">Выйти</button>
+            </form>
+            {% else %}
+            <a href="{% url 'health:yandex-login' %}">Войти через Я ID</a>
+            {% endif %}
+        </nav>
+    </header>
+    <main class="wrap">
+        {% if messages %}
+            <ul class="flash">
+                {% for message in messages %}
+                    <li>{{ message }}</li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

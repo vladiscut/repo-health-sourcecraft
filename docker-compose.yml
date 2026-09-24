@@ -1,0 +1,190 @@
+services:
+  web-repo-health:
+    container_name: web-repo-health
+    hostname: web-repo-health
+    restart: always
+    image: web-repo-health:latest
+    build:
+      context: .
+    env_file:
+      - .env
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             python manage.py runserver 0.0.0.0:$WEB_PORT"
+    volumes:
+      - .:/code
+    ports:
+      - "127.0.0.1:$WEB_PORT:$WEB_PORT"
+    depends_on:
+      postgres-repo-health:
+        condition: service_healthy
+      redis-repo-health:
+        condition: service_healthy
+    networks:
+      repo-health-network:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  pgbouncer-repo-health:
+    image: edoburu/pgbouncer:latest
+    container_name: pgbouncer-repo-health
+    hostname: pgbouncer-repo-health
+    restart: always
+    ports:
+      - "127.0.0.1:$PGBOUNCER_PORT:$PGBOUNCER_PORT"
+    env_file:
+      - .env
+    environment:
+      DB_HOST: postgres-repo-health
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB}
+      DB_PORT: ${POSTGRES_PORT}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 50
+      MIN_POOL_SIZE: 10
+      RESERVE_POOL_SIZE: 5
+      RESERVE_POOL_TIMEOUT: 3
+      AUTH_TYPE: scram-sha-256
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -d ${POSTGRES_DB} -p ${PGBOUNCER_PORT} -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      postgres-repo-health:
+        condition: service_healthy
+    networks:
+      repo-health-network:
+
+  postgres-repo-health:
+    container_name: postgres-repo-health
+    hostname: postgres-repo-health
+    restart: always
+    image: postgres:16-alpine
+    env_file:
+      - .env
+    volumes:
+      - postgres-repo-health-volume:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGPORT: ${POSTGRES_PORT}
+    command: postgres -p ${POSTGRES_PORT}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT}:${POSTGRES_PORT}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -d ${POSTGRES_DB} -p ${POSTGRES_PORT} -U ${POSTGRES_USER}"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      repo-health-network:
+
+  redis-repo-health:
+    container_name: redis-repo-health
+    hostname: redis-repo-health
+    restart: always
+    image: redis:7-alpine
+    command: --port ${REDIS_PORT}
+    ports:
+      - "127.0.0.1:${REDIS_PORT}:${REDIS_PORT}"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -p ${REDIS_PORT} ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks:
+      repo-health-network:
+
+  celery-user-repo-health:
+    container_name: celery-user-repo-health
+    restart: always
+    image: web-repo-health:latest
+    build:
+      context: .
+    env_file:
+      - .env
+    command: celery -A core worker -l info -P gevent -c 20 -Q analysis.user
+    environment:
+      - GEVENT_PATCH_ALL=1
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - .:/code
+    depends_on:
+      postgres-repo-health:
+        condition: service_healthy
+      redis-repo-health:
+        condition: service_healthy
+      pgbouncer-repo-health:
+        condition: service_healthy
+      web-repo-health:
+        condition: service_started
+    networks:
+      repo-health-network:
+
+  celery-scheduled-repo-health:
+    container_name: celery-scheduled-repo-health
+    restart: always
+    image: web-repo-health:latest
+    env_file:
+      - .env
+    command: celery -A core worker -l info -P gevent -c 100 -Q analysis.scheduled
+    environment:
+      - GEVENT_PATCH_ALL=1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - .:/code
+    depends_on:
+      postgres-repo-health:
+        condition: service_healthy
+      redis-repo-health:
+        condition: service_healthy
+      pgbouncer-repo-health:
+        condition: service_healthy
+      web-repo-health:
+        condition: service_started
+    networks:
+      repo-health-network:
+
+  celery-beat-repo-health:
+    container_name: celery-beat-repo-health
+    restart: always
+    image: web-repo-health:latest
+    build:
+      context: .
+    env_file:
+      - .env
+    command: celery -A core beat -l info --schedule=/tmp/celerybeat-schedule --pidfile=
+    volumes:
+      - .:/code
+    depends_on:
+      postgres-repo-health:
+        condition: service_healthy
+      redis-repo-health:
+        condition: service_healthy
+      web-repo-health:
+        condition: service_started
+    networks:
+      repo-health-network:
+
+
+volumes:
+  postgres-repo-health-volume:
+
+networks:
+  repo-health-network:
