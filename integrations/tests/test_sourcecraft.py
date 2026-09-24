@@ -6,7 +6,6 @@ import requests
 from django.test import SimpleTestCase, override_settings
 
 from integrations.sourcecraft import (
-    DEFAULT_PAGE_SIZE,
     RETRY_STATUS_CODES,
     SourceCraftAPI,
     SourceCraftClient,
@@ -73,7 +72,7 @@ class SourceCraftAPITests(SimpleTestCase):
 
     def test_missing_base_url_setting_raises(self):
         class NoUrl(SourceCraftAPI):
-            BASE_URL_SETTING = ""
+            BASE_URL_SETTING_NAME = "SOURCECRAFT_API_NO_SUCH_URL"
             RATE_LIMIT_KEY_PREFIX = ""
 
         with self.assertRaises(NotImplementedError):

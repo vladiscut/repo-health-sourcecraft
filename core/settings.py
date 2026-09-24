@@ -1,4 +1,5 @@
 import os
+import sys
 
 import environ
 
@@ -29,6 +30,11 @@ DATABASES = {
         "DISABLE_SERVER_SIDE_CURSORS": True,
     }
 }
+
+if 'test' in sys.argv:
+    # При запуске тестов обходим PgBouncer и подключаемся напрямую к PostgreSQL
+    DATABASES['default']['HOST'] = env("POSTGRES_CONTAINER")
+    DATABASES['default']['PORT'] = env("POSTGRES_PORT")
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

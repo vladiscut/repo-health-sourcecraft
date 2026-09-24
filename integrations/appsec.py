@@ -40,14 +40,13 @@ class AppSecClientError(SourceCraftError):
 class AppSecClient(SourceCraftAPI):
     """Клиент AppSec. Лимитер и ретраи те же, что у SourceCraft."""
 
-    BASE_URL_SETTING = settings.SOURCECRAFT_API_APPSEC_BASE_URL
+    BASE_URL_SETTING_NAME = "SOURCECRAFT_API_APPSEC_BASE_URL"
     RATE_LIMIT_KEY_PREFIX: "sourcecraft:appsec-rl"
 
     def __init__(
         self,
         token: str | None = None,
         timeout: float = DEFAULT_TIMEOUT,
-        retries: int = 3,
         session: Any = None,
         rate_limiter: Any = None,
         max_pages: int | None = None,
@@ -55,7 +54,6 @@ class AppSecClient(SourceCraftAPI):
         super().__init__(
             token=token,
             timeout=timeout,
-            retries=retries,
             session=session,
             rate_limiter=rate_limiter,
             max_pages=max_pages,
