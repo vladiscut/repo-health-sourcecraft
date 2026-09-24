@@ -3,6 +3,7 @@
 from django.contrib import messages
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
+from django.db import IntegrityError
 from django.db.models import Prefetch
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -207,16 +208,28 @@ def analyze_my_repo(request: HttpRequest, org_slug: str, repo_slug: str) -> Http
         allowed = user_can_access_repository(request.user, repo)
     if not allowed:
         raise Http404()
-    Scan.objects.create(
+    fallback = reverse("health:repo-detail", args=[org_slug, repo_slug])
+    next_url = _safe_next_url(request, fallback)
+    active = Scan.objects.filter(
         repository=repo,
-        status=Scan.Status.PENDING,
-        triggered_by=Scan.TriggeredBy.USER,
-        triggered_by_user=request.user,
-    )
+        status__in=[Scan.Status.PENDING, Scan.Status.RUNNING],
+    ).exists()
+    if active:
+        messages.info(request, "Анализ этого репозитория уже идёт.")
+        return redirect(next_url)
+    try:
+        Scan.objects.create(
+            repository=repo,
+            status=Scan.Status.PENDING,
+            triggered_by=Scan.TriggeredBy.USER,
+            triggered_by_user=request.user,
+        )
+    except IntegrityError:
+        messages.info(request, "Анализ этого репозитория уже идёт.")
+        return redirect(next_url)
     task_scan_user_repository.delay(repo.id)
     messages.info(
         request,
         "Анализ поставлен в очередь. Сбор метрик пока не подключён — это заготовка.",
     )
-    fallback = reverse("health:repo-detail", args=[org_slug, repo_slug])
-    return redirect(_safe_next_url(request, fallback))
+    return redirect(next_url)

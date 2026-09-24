@@ -85,6 +85,16 @@ class MyReposTests(TestCase):
         delay.assert_called_once_with(self.repo.id)
 
     @patch("health.account.task_scan_user_repository.delay")
+    def test_analyze_while_scan_is_active_shows_message(self, delay):
+        url = reverse("health:analyze-my-repo", args=["ivan", "app"])
+        self.client.post(url, {"next": reverse("health:my-repos")})
+        response = self.client.post(url, {"next": reverse("health:my-repos")})
+
+        self.assertRedirects(response, reverse("health:my-repos"))
+        self.assertEqual(Scan.objects.count(), 1)
+        delay.assert_called_once_with(self.repo.id)
+
+    @patch("health.account.task_scan_user_repository.delay")
     def test_analyze_rejects_open_redirect(self, delay):
         response = self.client.post(
             reverse("health:analyze-my-repo", args=["ivan", "app"]),
