@@ -14,7 +14,6 @@ from django.conf import settings
 
 from integrations.sourcecraft import (
     DEFAULT_PAGE_SIZE,
-    DEFAULT_TIMEOUT,
     SourceCraftAPI,
     SourceCraftError,
 )
@@ -38,30 +37,10 @@ class AppSecClientError(SourceCraftError):
 
 
 class AppSecClient(SourceCraftAPI):
-    """Клиент AppSec. Лимитер и ретраи те же, что у SourceCraft."""
+    """Клиент AppSec API."""
 
-    def __init__(
-        self,
-        token: str | None = None,
-        timeout: float = DEFAULT_TIMEOUT,
-        retries: int = 3,
-        session: Any = None,
-        rate_limiter: Any = None,
-        max_pages: int | None = None,
-        base_url: str | None = None,
-    ) -> None:
-        super().__init__(
-            token=token,
-            timeout=timeout,
-            retries=retries,
-            session=session,
-            rate_limiter=rate_limiter,
-            max_pages=max_pages,
-            base_url=base_url or settings.SOURCECRAFT_API_APPSEC_BASE_URL,
-        )
-
-    def _user_agent(self) -> str:
-        return "case-18-repo-health-score-team-47 (AppSecClient)"
+    BASE_URL_SETTING = settings.SOURCECRAFT_API_APPSEC_BASE_URL
+    RATE_LIMIT_KEY_PREFIX = "sourcecraft:appsec-rl"
 
     def _request(
         self,
