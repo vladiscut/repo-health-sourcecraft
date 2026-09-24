@@ -241,7 +241,7 @@ def start_repository_scan(
             existing_scan = repository.latest_completed_scan()
             if existing_scan is not None:
                 logger.info(
-                    f"Репозиторий {repository} по-прежнему пуст — "
+                    f"Репозиторий {repository} пуст — "
                     f"пропускаем пересчёт, используем существующий "
                     f"scan={existing_scan.id}"
                 )
@@ -278,7 +278,7 @@ def start_repository_scan(
             repository=repository,
             status=Scan.Status.RUNNING,
             triggered_by=triggered_by,
-            commit_sha_at_analysis=current_hash or last_commit or "",
+            commit_sha_at_analysis=current_hash or last_commit,
         )
     except IntegrityError as exc:
         raise ActiveScanExistsError(
@@ -413,12 +413,14 @@ def scan_all_public_repositories():
     return {"dispatched": len(repo_ids)}
 
 
-def check_and_scan_repository(repository_id: int) -> dict:
+def check_and_scan_repository(repository_id: int, force: bool = False) -> dict:
     """Проверка хеша + запуск скана при необходимости"""
 
     try:
         scan_id = start_repository_scan(
-            repository_id, triggered_by=Scan.TriggeredBy.SCHEDULE
+            repository_id,
+            triggered_by=Scan.TriggeredBy.SCHEDULE,
+            force=force,
         )
         return {"repository_id": repository_id, "scan_id": scan_id}
     except ActiveScanExistsError:

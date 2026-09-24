@@ -23,7 +23,13 @@ from typing import Any
 
 from django.db import transaction
 
-from health.models import Finding, HealthScore, MetricSample, Scan
+from health.models import (
+    Finding,
+    HealthScore,
+    MetricSample,
+    Scan,
+    Repository,
+)
 from health.scoring import (
     CATEGORY_WEIGHTS,
     DOCS_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD,
@@ -332,7 +338,6 @@ def _collect_tree(
     except SourceCraftError as exc:
         logger.error(f"Не удалось получить дерево файлов {repo}: {exc}")
         return None
-
     normalized: dict[str, dict[str, Any]] = {}
     for entry in tree:
         path = str(entry.get("path") or entry.get("name") or "")
@@ -343,11 +348,15 @@ def _collect_tree(
 
 
 def _read_file_safe(
-    file_client: SourceCraftFileClient, repo, path: str
+    file_client: SourceCraftFileClient,
+    repo: Repository,
+    path: str
 ) -> tuple[str | None, str]:
+    if not repo.scan_commit_sha:
+        return None, "нет хеша последнего коммита"
     try:
         content = file_client.get_file_text(
-            repo.org_slug, repo.repo_slug, path, repo.default_branch or "HEAD"
+            repo.org_slug, repo.repo_slug, path, repo.scan_commit_sha
         )
     except SourceCraftError as exc:
         if exc.status_code == 404:
@@ -822,11 +831,11 @@ def _build_findings(
 def run_docs_scan(
     scan: Scan,
     client: SourceCraftClient,
+    file_client: SourceCraftFileClient,
 ) -> HealthScore:
     """Собирает данные по документации репозитория и сохраняет результат."""
 
     repository = scan.repository
-    file_client = SourceCraftFileClient()
 
     # --- Сетевая часть: без открытой транзакции ---
     tree = _collect_tree(client, repository)
@@ -853,6 +862,8 @@ def run_docs_scan(
                 ),
             )
         return health_score
+
+    repository.scan_commit_sha = scan.commit_sha_at_analysis
 
     metrics = _compute_metrics(file_client, repository, tree)
 

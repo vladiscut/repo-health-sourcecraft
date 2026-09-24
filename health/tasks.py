@@ -187,11 +187,11 @@ def task_reap_stale_scans() -> None:
 
 
 @shared_task
-def task_check_and_scan_repository(repository_id: int) -> None:
+def task_check_and_scan_repository(repository_id: int, force: bool = False) -> None:
     """Проверка хеша + запуск скана при необходимости для олного репозитория"""
 
     from health.orchestrator import check_and_scan_repository
-    check_and_scan_repository(repository_id)
+    check_and_scan_repository(repository_id, force)
 
 
 @shared_task
