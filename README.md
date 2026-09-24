@@ -3,8 +3,6 @@
 Сервис оценки здоровья открытых репозиториев SourceCraft.
 Стек: Django, шаблоны, DRF, Postgres, Redis, Celery.
 
-План работ: `PLAN.md`.
-
 ## Как поднять локально
 
 Нужен Docker. В `.env` — токен SourceCraft, иначе каталог не приедет.
