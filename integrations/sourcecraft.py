@@ -496,7 +496,10 @@ class SourceCraftClient(SourceCraftAPI):
     ) -> list[dict[str, Any]]:
         """Возвращает список файлов репозитория"""
 
-        params: dict[str, Any] = {"revision": since or "HEAD"}
+        params: dict[str, Any] = {
+            "revision": since or "HEAD",
+            "recursive": 1,
+        }
         return list(
             self._paginate(
                 f"/repos/id:{repo_id}/trees",

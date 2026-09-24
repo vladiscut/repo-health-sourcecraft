@@ -30,52 +30,209 @@ from health.scoring import (
     bump_severity,
     score_docs_category,
 )
-from integrations.sourcecraft import SourceCraftClient, SourceCraftError
+from integrations.sourcecraft import (
+    SourceCraftClient,
+    SourceCraftFileClient,
+    SourceCraftError,
+)
 
 
 logger = logging.getLogger(__name__)
 
 CATEGORY = MetricSample.Category.DOCS
 
-# Номинальный вес категории по ТЗ — единственный источник: health.scoring.
+# Номинальный вес категории по ТЗ
 # Финальная перенормировка между всеми 6 категориями — задача
 # health.orchestrator.aggregate_scan.
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
 
 README_MAX_CHARS = 200_000
 
-BINARY_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg",
-    ".pdf", ".zip", ".tar", ".gz", ".bz2", ".7z", ".rar",
-    ".exe", ".dll", ".so", ".dylib", ".bin", ".pyc",
-    ".woff", ".woff2", ".ttf", ".otf", ".eot",
-    ".mp3", ".mp4", ".avi", ".mov", ".webm",
-}
+# Конвенция SourceCraft для CI: каталог `.sourcecraft/` с файлом вида
+# ci.yaml/ci.yml внутри (см. пример дерева репозитория на платформе).
+# Это ОСНОВНАЯ конвенция для проектов SourceCraft — импорт с внешних
+# платформ не требуется по ТЗ, поэтому её приоритизируем, но
+# GitHub/GitLab-конвенции оставляем как доп. сигналы на случай, если
+# конфиг остался в истории репозитория.
+SOURCECRAFT_CI_DIR = ".sourcecraft"
+SOURCECRAFT_CI_FILENAME_STEMS = ("ci",)
 
+# Ключевые слова/заголовки, указывающие на инструкцию локального запуска.
+# команды популярных экосистем (pip/npm/yarn/pnpm/poetry/go/cargo/make)
+# и упоминания docker/compose
 LOCAL_RUN_PATTERNS = [
-    r"quick\s*start", r"getting\s*started", r"installation", r"install",
-    r"запуск", r"установка", r"pip\s+install", r"npm\s+install",
-    r"yarn\s+install", r"docker\s+run", r"docker-compose",
+    r"quick\s*start",
+    r"getting\s*started",
+    r"get\s+started",
+    r"how\s+to\s+(run|start|launch)",
+    r"\binstallation\b",
+    r"\binstall(ing)?\b",
+    r"\bsetup\b",
+    r"\bset[\s-]*up\b",
+    r"local\s+(development|dev|run|setup|environment)",
+    r"running\s+(the\s+)?(project|app|application|service|server)",
+    r"run\s+locally",
+    r"prerequisites",
+    r"requirements",
+    r"environment\s+variables",
+    r"\.env\b",
+    r"pip\s+install",
+    r"pipx\s+install",
+    r"poetry\s+(install|run)",
+    r"pipenv\s+install",
+    r"conda\s+(install|create)",
+    r"npm\s+(install|ci|start|run)",
+    r"yarn\s+(install|start)",
+    r"pnpm\s+(install|start)",
+    r"go\s+run",
+    r"go\s+install",
+    r"cargo\s+run",
+    r"cargo\s+install",
+    r"bundle\s+install",
+    r"composer\s+install",
+    r"docker\s+run",
+    r"docker-compose",
+    r"docker\s+compose",
+    r"make\s+(run|start|up|install)",
+    r"\bvenv\b",
+    r"virtualenv",
+    r"python\s+manage\.py\s+runserver",
+    # Русскоязычные варианты
+    r"быстрый\s+старт",
+    r"начало\s+работы",
+    r"как\s+запустить",
+    r"локальн(ый|ая|ое)\s+(запуск|разработк|окружени|развёртывани|развертывани)",
+    r"запуск\s+(проекта|приложения|сервиса)",
+    r"установка\s+и\s+запуск",
+    r"\bустановка\b",
+    r"предварительные\s+требования",
+    r"зависимост",
+    r"переменные\s+окружения",
+    r"первый\s+запуск",
+    r"инструкция\s+по\s+запуску",
 ]
+
+# Ключевые слова/заголовки, указывающие на инструкции по сборке и тестам.
 BUILD_TEST_PATTERNS = [
-    r"\bbuild\b", r"\btest", r"сборка", r"тестирование", r"тесты",
-    r"pytest", r"make\s+test", r"npm\s+test", r"tox",
+    r"\bbuild(ing)?\b",
+    r"\bcompil(e|ing|ation)\b",
+    r"\btest(s|ing)?\b",
+    r"unit\s+tests?",
+    r"integration\s+tests?",
+    r"end[\s-]*to[\s-]*end\s+tests?",
+    r"\be2e\b",
+    r"test\s+coverage",
+    r"code\s+coverage",
+    r"continuous\s+integration",
+    r"\blint(ing)?\b",
+    r"pytest",
+    r"unittest",
+    r"tox\b",
+    r"nox\b",
+    r"jest\b",
+    r"mocha\b",
+    r"vitest\b",
+    r"cypress\b",
+    r"playwright\b",
+    r"junit\b",
+    r"go\s+test",
+    r"cargo\s+test",
+    r"make\s+(build|test|check|lint)",
+    r"npm\s+(run\s+)?(build|test)",
+    r"yarn\s+(build|test)",
+    r"tox\s+-e",
+    r"\bci/cd\b",
+    r"github\s+actions",
+    r"gitlab[\s-]*ci",
+    r"pre-commit",
+    # Русскоязычные варианты
+    r"сборк[а-я]*",
+    r"тестировани[а-я]*",
+    r"\bтест[а-я]*\b",
+    r"модульные?\s+тест",
+    r"интеграционные?\s+тест",
+    r"покрытие\s+тест",
+    r"запуск\s+тест",
+    r"как\s+собрать",
+    r"как\s+протестировать",
+    r"проверка\s+кода",
 ]
+
+# Ключевые слова/заголовки, указывающие на описание структуры проекта.
 STRUCTURE_PATTERNS = [
-    r"структур[аеу]", r"project\s+structure", r"repository\s+structure",
-    r"directory\s+structure", r"layout", r"архитектур",
+    r"структур[аеу]",
+    r"project\s+structure",
+    r"repository\s+structure",
+    r"repo\s+structure",
+    r"directory\s+structure",
+    r"folder\s+structure",
+    r"file\s+structure",
+    r"\blayout\b",
+    r"архитектур[а-я]*",
+    r"\barchitecture\b",
+    r"code\s+organization",
+    r"codebase\s+overview",
+    r"module\s+overview",
+    r"components?\s+overview",
+    r"directory\s+(tree|layout)",
+    r"project\s+layout",
+    r"what'?s\s+in\s+this\s+repo",
+    r"folder\s+organization",
+    r"repository\s+layout",
+    # Русскоязычные варианты
+    r"структура\s+(проекта|репозитория|каталогов|папок)",
+    r"организация\s+(кода|проекта)",
+    r"устройство\s+проекта",
+    r"описание\s+(модулей|компонентов)",
+    r"дерево\s+(каталогов|директорий)",
 ]
+
+# Распознавание типа лицензии по содержимому файла LICENSE.
 LICENSE_PATTERNS = [
     ("MIT", r"MIT\s+License"),
     ("Apache-2.0", r"Apache\s+License,?\s+Version\s+2\.0"),
+    ("Apache-2.0", r"\bApache-2\.0\b"),
+    ("GPL-3.0", r"GNU\s+GENERAL\s+PUBLIC\s+LICENSE\s*[,\s]*Version\s+3"),
+    ("GPL-2.0", r"GNU\s+GENERAL\s+PUBLIC\s+LICENSE\s*[,\s]*Version\s+2"),
     ("GPL", r"GNU\s+General\s+Public\s+License"),
+    ("LGPL", r"GNU\s+Lesser\s+General\s+Public\s+License"),
+    ("LGPL", r"\bLGPL\b"),
+    ("AGPL", r"GNU\s+Affero\s+General\s+Public\s+License"),
+    ("AGPL", r"\bAGPL\b"),
+    ("BSD-3-Clause", r"BSD\s+3-Clause\s+License"),
+    ("BSD-2-Clause", r"BSD\s+2-Clause\s+License"),
     ("BSD", r"BSD\s+\d?-?Clause|BSD\s+License"),
+    ("MPL-2.0", r"Mozilla\s+Public\s+License,?\s+version\s+2\.0"),
+    ("MPL", r"Mozilla\s+Public\s+License"),
+    ("ISC", r"\bISC\s+License\b"),
+    ("Unlicense", r"\bThis\s+is\s+free\s+and\s+unencumbered\s+software\b"),
+    ("Unlicense", r"^\s*Unlicense\s*$"),
+    ("CC0", r"CC0\s+1\.0\s+Universal"),
+    ("CC-BY", r"Creative\s+Commons\s+Attribution"),
+    ("EPL", r"Eclipse\s+Public\s+License"),
+    ("WTFPL", r"DO\s+WHAT\s+THE\s+F\*?CK\s+YOU\s+WANT"),
+    ("Boost", r"Boost\s+Software\s+License"),
+    ("Zlib", r"zlib\s+License"),
+    ("Artistic-2.0", r"Artistic\s+License\s+2\.0"),
+    ("Proprietary", r"[Aa]ll\s+[Rr]ights\s+[Rr]eserved"),
+    # Русскоязычные варианты
+    ("Proprietary", r"[Вв]се\s+права\s+защищены"),
 ]
 
 # Стемы имён файлов (без расширения, без учёта регистра), которые ищем
-# не только в корне, но и в типовых подпапках (.github/, docs/) —
-# CONTRIBUTING по конвенции часто лежит именно там.
-CONTRIBUTING_STEMS = ("contributing",)
+# не только в корне, но и в типовых подпапках (.github/, docs/, .gitlab/)
+CONTRIBUTING_STEMS = (
+    "contributing",
+    "contribute",
+    "contributors",
+    "contribution",
+    "contribution_guide",
+    "contribution-guide",
+    "contributing_guide",
+    "contributing-guide",
+    "how_to_contribute",
+    "how-to-contribute",
+)
 
 
 @dataclass
@@ -102,6 +259,60 @@ class _DocsMetrics:
     issue_templates_present: bool | None = None
     pr_template_present: bool | None = None
     ci_config_present: bool | None = None
+
+
+def _has_sourcecraft_ci_config(tree: dict[str, dict[str, Any]]) -> bool:
+    """Ищет CI-конфиг SourceCraft: файл `ci.<ext>` внутри `.sourcecraft/`.
+
+    Не привязываемся к конкретному расширению (.yaml/.yml/.json) —
+    проверяем стем имени файла.
+    """
+
+    prefix = SOURCECRAFT_CI_DIR + "/"
+    for path_lower, entry in tree.items():
+        if not path_lower.startswith(prefix):
+            continue
+        entry_type = str(entry.get("type") or "").lower()
+        if entry_type not in ("file", "executable"):
+            continue
+        name = path_lower[len(prefix):]
+        if "/" in name:
+            continue  # только файлы прямо в .sourcecraft/, не глубже
+        stem = name.rsplit(".", 1)[0] if "." in name else name
+        if stem in SOURCECRAFT_CI_FILENAME_STEMS:
+            return True
+    return False
+
+
+def _detect_ci_config_present(tree: dict[str, dict[str, Any]]) -> bool:
+    """Определяет наличие CI-конфига по всем известным конвенциям.
+
+    Порядок проверки: сначала родная конвенция SourceCraft
+    (`.sourcecraft/ci.yaml`), затем GitHub Actions / GitLab CI — на
+    случай, если в репозитории остались файлы истории миграции с
+    другой платформы, затем — legacy-эвристика по имени файла
+    `sourcecraft-ci*`
+    """
+
+    if _has_sourcecraft_ci_config(tree):
+        return True
+
+    github_gitlab_candidates = (
+        ".gitlab-ci.yml",
+        ".github/workflows",
+    )
+    if _has_path(tree, github_gitlab_candidates[0]):
+        return True
+    prefix = github_gitlab_candidates[1]
+    if any(p == prefix or p.startswith(prefix + "/") for p in tree):
+        return True
+
+    for path_lower in tree:
+        name = path_lower.rsplit("/", 1)[-1]
+        if name.startswith("sourcecraft-ci") or name.startswith(".sourcecraft-ci"):
+            return True
+
+    return False
 
 
 def _collect_tree(
@@ -132,17 +343,20 @@ def _collect_tree(
 
 
 def _read_file_safe(
-    file_client: None, repo, path: str
+    file_client: SourceCraftFileClient, repo, path: str
 ) -> tuple[str | None, str]:
-    """Читает содержимое файла через SourceCraftFileClient.
+    try:
+        content = file_client.get_file_text(
+            repo.org_slug, repo.repo_slug, path, repo.default_branch or "HEAD"
+        )
+    except SourceCraftError as exc:
+        if exc.status_code == 404:
+            return None, "файл не найден (404)"
+        return None, f"ошибка API: {exc}"
 
-    Возвращает ``(content_or_None, error_reason)``. Никогда не бросает.
-    """
-
-    content, reason = file_client.get_text(repo.url, path)
-    if content is not None and len(content) > README_MAX_CHARS:
+    if len(content) > README_MAX_CHARS:
         content = content[:README_MAX_CHARS]
-    return content, reason
+    return content, ""
 
 
 def _matches_any(text: str, patterns: list[str]) -> bool:
@@ -179,9 +393,9 @@ def _find_file_by_stem(
     stems: tuple[str, ...],
     types: tuple[str, ...] = ("file", "executable"),
 ) -> str | None:
-    """Ищет файл по имени без расширения в любом месте дерева (не только в
-    корне) — используется для файлов вроде CONTRIBUTING, которые по
-    конвенции нередко лежат в .github/ или docs/, а не только в корне.
+    """Ищет файл по имени без расширения в любом месте
+    дерева — используется для файлов вроде CONTRIBUTING, которые по
+    конвенции нередко лежат в .github/ или docs/
     """
 
     for path_lower, entry in tree.items():
@@ -222,13 +436,13 @@ def _has_prefix_in(
 
 
 def _compute_metrics(
-    file_client: None,
+    file_client: SourceCraftFileClient,
     repo,
     tree: dict[str, dict[str, Any]],
 ) -> _DocsMetrics:
     metrics = _DocsMetrics()
 
-    # README -----------------------------------------------------------
+    # README
     readme_path = _find_root_file(tree, ("readme",))
     metrics.readme_present = readme_path is not None
     metrics.readme_path = readme_path
@@ -243,7 +457,7 @@ def _compute_metrics(
             metrics.readme_has_build_test = _matches_any(content, BUILD_TEST_PATTERNS)
             metrics.readme_has_structure = _matches_any(content, STRUCTURE_PATTERNS)
 
-    # LICENSE ----------------------------------------------------------
+    # LICENSE
     license_path = _find_root_file(
         tree, ("license", "copying", "licence"), suffixes=(".md", ".txt")
     )
@@ -263,7 +477,7 @@ def _compute_metrics(
             )
             metrics.license_type_recognized = recognized
 
-    # Документы и шаблоны по дереву -------------------------------------
+    # Документы и шаблоны по дереву
     # CONTRIBUTING ищем не только в корне, но и в .github/, docs/ —
     # по конвенции он нередко лежит именно там.
     metrics.contributing_present = _find_file_by_stem(
@@ -297,21 +511,7 @@ def _compute_metrics(
         or _has_prefix_in(tree, "docs", pr_template_prefixes)
     )
 
-    ci_candidates = (
-        ".gitlab-ci.yml",
-        ".github/workflows",
-    )
-    ci_present = _has_path(tree, ci_candidates[0]) or any(
-        p == ci_candidates[1] or p.startswith(ci_candidates[1] + "/")
-        for p in tree
-    )
-    if not ci_present:
-        for path_lower in tree:
-            name = path_lower.rsplit("/", 1)[-1]
-            if name.startswith("sourcecraft-ci") or name.startswith(".sourcecraft-ci"):
-                ci_present = True
-                break
-    metrics.ci_config_present = ci_present
+    metrics.ci_config_present = _detect_ci_config_present(tree)
 
     return metrics
 
@@ -626,7 +826,7 @@ def run_docs_scan(
     """Собирает данные по документации репозитория и сохраняет результат."""
 
     repository = scan.repository
-    file_client = None # TODO
+    file_client = SourceCraftFileClient()
 
     # --- Сетевая часть: без открытой транзакции ---
     tree = _collect_tree(client, repository)
@@ -697,7 +897,7 @@ def run_docs_scan(
 
 def run(scan_id: int) -> int:
     client = SourceCraftClient()
-    file_client = None # TODO
+    file_client = SourceCraftFileClient()
     scan = Scan.objects.select_related("repository").get(pk=scan_id)
     health_score = run_docs_scan(scan, client, file_client)
     return health_score.pk
