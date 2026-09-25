@@ -14,7 +14,6 @@ from django.conf import settings
 
 from integrations.sourcecraft import (
     DEFAULT_PAGE_SIZE,
-    DEFAULT_TIMEOUT,
     SourceCraftAPI,
     SourceCraftError,
 )
@@ -38,7 +37,7 @@ class AppSecClientError(SourceCraftError):
 
 
 class AppSecClient(SourceCraftAPI):
-    """Клиент AppSec. Лимитер и ретраи те же, что у SourceCraft."""
+    """Клиент AppSec API."""
 
     BASE_URL_SETTING_NAME = "SOURCECRAFT_API_APPSEC_BASE_URL"
     RATE_LIMIT_KEY_PREFIX: "sourcecraft:appsec-rl"
