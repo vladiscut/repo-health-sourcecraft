@@ -199,7 +199,7 @@ def task_check_and_scan_repository(
     from health.orchestrator import check_and_scan_repository
     check_and_scan_repository(repository_id, force, user_id)
 
-
 def task_scan_user_repository(obj1, obj2):
     # TODO delete
     pass
+

@@ -194,7 +194,6 @@ def refresh_my_repos(request: HttpRequest) -> HttpResponse:
         messages.error(request, f"Не удалось получить репозитории: {exc}")
     return redirect("health:my-repos")
 
-
 @login_required
 @require_POST
 def analyze_my_repo(request: HttpRequest, org_slug: str, repo_slug: str) -> HttpResponse:
@@ -233,3 +232,4 @@ def analyze_my_repo(request: HttpRequest, org_slug: str, repo_slug: str) -> Http
         "Анализ поставлен в очередь. Сбор метрик пока не подключён — это заготовка.",
     )
     return redirect(next_url)
+
