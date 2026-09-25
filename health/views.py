@@ -12,11 +12,12 @@ from django.views.generic import DetailView, ListView
 
 from health.models import Repository, Scan, UserRepositoryAccess
 from health.scoring import present_scores
-from health.tasks import task_scan_user_repository
+from health.tasks import task_check_and_scan_repository, task_scan_user_repository
 from health.user_repository import user_can_access_repository
 
 
 PAGE_SIZE = 50
+SCHEDULE_QUEUE_NAME = "analysis.scheduled"
 
 
 SORTS = {
@@ -227,6 +228,21 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
 
     def get_object(self, queryset=None):
         return self.get_repository()
+
+    def get(self, request, *args, **kwargs):
+        if request.GET.get("scan", "").lower() in {"1", "true", "yes"}:
+            repo = self.get_repository()
+            task_check_and_scan_repository.apply_async(
+                args=[repo.id, True],
+                queue=SCHEDULE_QUEUE_NAME,
+            )
+            messages.info(request, "Плановый скан поставлен в очередь.")
+            return redirect(
+                "health:repo-detail",
+                org_slug=repo.org_slug,
+                repo_slug=repo.repo_slug,
+            )
+        return super().get(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)

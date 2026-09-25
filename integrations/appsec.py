@@ -10,8 +10,6 @@
 
 from typing import Any
 
-from django.conf import settings
-
 from integrations.sourcecraft import (
     DEFAULT_PAGE_SIZE,
     SourceCraftAPI,
@@ -40,23 +38,7 @@ class AppSecClient(SourceCraftAPI):
     """Клиент AppSec API."""
 
     BASE_URL_SETTING_NAME = "SOURCECRAFT_API_APPSEC_BASE_URL"
-    RATE_LIMIT_KEY_PREFIX: "sourcecraft:appsec-rl"
-
-    def __init__(
-        self,
-        token: str | None = None,
-        timeout: float = DEFAULT_TIMEOUT,
-        session: Any = None,
-        rate_limiter: Any = None,
-        max_pages: int | None = None,
-    ) -> None:
-        super().__init__(
-            token=token,
-            timeout=timeout,
-            session=session,
-            rate_limiter=rate_limiter,
-            max_pages=max_pages,
-        )
+    RATE_LIMIT_KEY_PREFIX = "sourcecraft:appsec-rl"
 
     def _user_agent(self) -> str:
         return "case-18-repo-health-score-team-47 (AppSecClient)"

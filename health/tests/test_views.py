@@ -110,6 +110,53 @@ class RepoDetailAndExportTests(TestCase):
         self.assertContains(response, "Скачать Markdown")
         self.assertContains(response, "Скачать PDF")
 
+    @patch("health.views.task_check_and_scan_repository.apply_async")
+    def test_scan_query_queues_scheduled_force_scan(self, apply_async):
+        url = reverse("health:repo-detail", args=["acme", "tools"])
+        response = self.client.get(url, {"scan": "true"})
+
+        self.assertRedirects(response, url)
+        apply_async.assert_called_once_with(
+            args=[self.public.id, True],
+            queue="analysis.scheduled",
+        )
+
+    @patch("health.views.task_check_and_scan_repository.apply_async")
+    def test_scan_query_ignored_without_flag(self, apply_async):
+        response = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"])
+        )
+        self.assertEqual(response.status_code, 200)
+        apply_async.assert_not_called()
+
+    @patch("health.views.task_check_and_scan_repository.apply_async")
+    def test_scan_query_on_private_without_access_is_404(self, apply_async):
+        response = self.client.get(
+            reverse("health:repo-detail", args=["hidden", "secret"]),
+            {"scan": "true"},
+        )
+        self.assertEqual(response.status_code, 404)
+        apply_async.assert_not_called()
+
+    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.user_repository.SourceCraftClient")
+    def test_scan_query_on_private_with_access_queues_scan(
+        self, client_cls, apply_async
+    ):
+        user = get_user_model().objects.create_user("owner", password="x")
+        make_profile(user, sourcecraft_pat="pat-still-valid")
+        self.client.force_login(user)
+        client_cls.return_value.get_repository.return_value = {"id": "private-1"}
+        url = reverse("health:repo-detail", args=["hidden", "secret"])
+
+        response = self.client.get(url, {"scan": "true"})
+
+        self.assertRedirects(response, url)
+        apply_async.assert_called_once_with(
+            args=[self.private.id, True],
+            queue="analysis.scheduled",
+        )
+
     def test_private_detail_is_404(self):
         response = self.client.get(
             reverse("health:repo-detail", args=["hidden", "secret"])
