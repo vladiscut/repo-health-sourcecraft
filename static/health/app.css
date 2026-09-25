@@ -161,7 +161,7 @@ button.busy + .loader { display: inline-block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .bars { list-style: none; padding: 0; margin: 0; }
-.bars li { display: grid; grid-template-columns: 140px 1fr 40px; gap: 10px; align-items: center; margin-bottom: 8px; }
+.bars li { display: grid; grid-template-columns: 140px 1fr auto; gap: 10px; align-items: center; margin-bottom: 8px; }
 .bar { height: 8px; background: #10141c; border: 1px solid var(--line); }
 .bar i { display: block; height: 100%; background: var(--accent); }
 

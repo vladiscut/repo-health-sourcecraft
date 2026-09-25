@@ -662,12 +662,15 @@ def score_level(total: int | None) -> str:
 
 
 def present_scores(totals: dict[str, int | None]) -> dict:
-    """Данные для шаблона: итог, уровень, подписи категорий."""
+    """Данные для шаблона: итог, уровень и все шесть категорий.
+
+    Категория без балла остаётся в списке со значением None.
+    Шаблон показывает её как «Нет данных», а не как 0.
+    """
     total = overall_from_category_totals(totals)
     categories = [
-        (CATEGORY_LABELS.get(key, key), value)
-        for key, value in totals.items()
-        if value is not None
+        (label, totals.get(key))
+        for key, label in CATEGORY_LABELS.items()
     ]
     return {
         "total": total,
