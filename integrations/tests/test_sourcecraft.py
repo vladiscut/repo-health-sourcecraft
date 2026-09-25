@@ -374,9 +374,25 @@ class SourceCraftFileClientTests(SimpleTestCase):
 
         self.assertEqual(result, "hello")
         url = session.request.call_args.args[1]
-        self.assertTrue(
-            url.startswith("https://files.example.test/raw/org/repo/abc/")
+        self.assertEqual(
+            url,
+            "https://files.example.test/raw/org/repo/abc/README.md",
         )
+        self.assertNotIn("token=", url)
+
+    def test_get_file_text_keeps_slashes_in_nested_path(self):
+        client, session = self._client()
+        response = Mock()
+        response.status_code = 200
+        response.text = "nested"
+        session.request.return_value = response
+
+        client.get_file_text("org", "repo", "docs/README.md", "abc")
+
+        url = session.request.call_args.args[1]
+        self.assertIn("/docs/README.md", url)
+        self.assertNotIn("%2F", url)
+        self.assertNotIn("token=", url)
 
     def test_get_file_text_requires_path_and_revision(self):
         client, _ = self._client()

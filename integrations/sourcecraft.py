@@ -598,6 +598,16 @@ class SourceCraftClient(SourceCraftAPI):
             return branches[0].get("commit", {}).get("hash")
 
 
+def _quote_repo_path(relative_path: str) -> str:
+    """Кодирует сегменты пути и оставляет ``/`` между ними."""
+
+    return "/".join(
+        quote(part, safe="")
+        for part in relative_path.split("/")
+        if part
+    )
+
+
 class SourceCraftFileClient(SourceCraftAPI):
     """Клиент файлового ресурса SourceCraft (сырые файлы репозитория)"""
 
@@ -612,9 +622,14 @@ class SourceCraftFileClient(SourceCraftAPI):
     ) -> str:
         """Возвращает контент одного файла репозитория.
 
+        URL: ``{base}/raw/{org}/{repo}/{полный_хеш}/{путь}``.
+        В ``revision`` нужен полный хеш коммита: ветка и короткий хеш
+        дают 404. Параметр ``?token=`` — это короткоживущий токен из
+        интерфейса, не PAT. PAT в query и в ``Authorization`` приватный
+        файл не открывает.
+
         404 не подменяется пустой строкой/None — поднимается как
-        `SourceCraftError(status_code=404)`, вызывающий код сам решает,
-        трактовать ли отсутствие файла как "нет данных".
+        ``SourceCraftError(status_code=404)``.
         """
 
         relative_path = path.lstrip("/")
@@ -631,7 +646,7 @@ class SourceCraftFileClient(SourceCraftAPI):
             f"{quote(org_slug, safe='')}/"
             f"{quote(repo_slug, safe='')}/"
             f"{quote(revision, safe='')}/"
-            f"{quote(relative_path, safe='')}"
+            f"{_quote_repo_path(relative_path)}"
         )
 
         self.rate_limiter.acquire()
