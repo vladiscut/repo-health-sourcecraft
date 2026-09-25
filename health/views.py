@@ -10,9 +10,10 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views import View
 from django.views.generic import DetailView, ListView
 
+from core.celery import USER_QUEUE_NAME
 from health.models import Repository, Scan, UserRepositoryAccess
 from health.scoring import present_scores
-from health.tasks import task_scan_user_repository
+from health.tasks import task_check_and_scan_repository
 from health.user_repository import user_can_access_repository
 
 
@@ -272,8 +273,14 @@ class RepoRescanView(RepositoryAccessMixin, View):
 
     def post(self, request, org_slug, repo_slug):
         repo = self.get_repository()
-        task_scan_user_repository.delay(repo.id)
+
+        task_check_and_scan_repository.apply_async(
+            args=[repo.id, self.request.user.id, True],
+            queue=USER_QUEUE_NAME,
+        )
+
         messages.info(request, "Проверка поставлена в очередь.")
+
         return redirect(
             "health:repo-detail",
             org_slug=org_slug,

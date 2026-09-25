@@ -27,29 +27,32 @@ def _close_db_connections_after_task(**kwargs) -> None:
     close_old_connections()
 
 
+USER_QUEUE_NAME = "analysis.user"
+SCHEDULE_QUEUE_NAME = "analysis.scheduled"
+
 app.conf.task_routes = {
     # получение всех публичных репозиторией
-    "health.tasks.task_update_all_public_repos": {"queue": "analysis.scheduled"},
+    "health.tasks.task_update_all_public_repos": {"queue": SCHEDULE_QUEUE_NAME},
     # сканирование для каждого публичного репозитория
-    "health.tasks.task_scan_all_public_repositories": {"queue": "analysis.scheduled"},
+    "health.tasks.task_scan_all_public_repositories": {"queue": SCHEDULE_QUEUE_NAME},
     # скан категории ISSUES
-    "health.tasks.task_issues_scan": {"queue": "analysis.scheduled"},
+    "health.tasks.task_issues_scan": {"queue": SCHEDULE_QUEUE_NAME},
     # скан категории ISSUES
-    "health.tasks.task_docs_scan": {"queue": "analysis.scheduled"},
+    "health.tasks.task_docs_scan": {"queue": SCHEDULE_QUEUE_NAME},
     # скан категории DOCS
-    "health.tasks.task_cicd_scan": {"queue": "analysis.scheduled"},
+    "health.tasks.task_cicd_scan": {"queue": SCHEDULE_QUEUE_NAME},
     # скан категории SECURITY
-    "health.tasks.task_security_scan": {"queue": "analysis.scheduled"},
+    "health.tasks.task_security_scan": {"queue": SCHEDULE_QUEUE_NAME},
     # скан категории ACTIVITY
-    "health.tasks.task_activity_scan": {"queue": "analysis.scheduled"},
+    "health.tasks.task_activity_scan": {"queue": SCHEDULE_QUEUE_NAME},
     # скан категории CODE_HEALTH
-    "health.tasks.task_code_health_scan": {"queue": "analysis.scheduled"},
+    "health.tasks.task_code_health_scan": {"queue": SCHEDULE_QUEUE_NAME},
     # cчитает score по всем категориям
-    "health.tasks.task_aggregate_scan": {"queue": "analysis.scheduled"},
+    "health.tasks.task_aggregate_scan": {"queue": SCHEDULE_QUEUE_NAME},
     # снимает зависшие сканы
-    "health.tasks.task_reap_stale_scans": {"queue": "analysis.scheduled"},
+    "health.tasks.task_reap_stale_scans": {"queue": SCHEDULE_QUEUE_NAME},
     # проверка и запуск скана
-    "health.tasks.task_check_and_scan_repository": {"queue": "analysis.scheduled"},
+    "health.tasks.task_check_and_scan_repository": {"queue": SCHEDULE_QUEUE_NAME},
     # скан репозитория пользователя
-    "health.tasks.task_scan_user_repository": {"queue": "analysis.user"},
+    "health.tasks.task_scan_user_repository": {"queue": USER_QUEUE_NAME},
 }

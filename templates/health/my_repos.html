@@ -70,7 +70,7 @@
                 {% endif %}
             </td>
             <td>
-                <form method="post" action="{% url 'health:analyze-my-repo' item.repo.org_slug item.repo.repo_slug %}">
+                <form method="post" action="{% url 'health:repo-rescan' item.repo.org_slug item.repo.repo_slug %}">
                     {% csrf_token %}
                     <input type="hidden" name="next" value="{% url 'health:my-repos' %}">
                     <button type="submit">Анализировать</button>
