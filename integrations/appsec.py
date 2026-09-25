@@ -39,7 +39,6 @@ class AppSecClientError(SourceCraftError):
 class AppSecClient(SourceCraftAPI):
     """Клиент AppSec API."""
 
-<<<<<<< HEAD
     BASE_URL_SETTING_NAME = "SOURCECRAFT_API_APPSEC_BASE_URL"
     RATE_LIMIT_KEY_PREFIX: "sourcecraft:appsec-rl"
 
@@ -61,10 +60,6 @@ class AppSecClient(SourceCraftAPI):
 
     def _user_agent(self) -> str:
         return "case-18-repo-health-score-team-47 (AppSecClient)"
-=======
-    BASE_URL_SETTING = settings.SOURCECRAFT_API_APPSEC_BASE_URL
-    RATE_LIMIT_KEY_PREFIX = "sourcecraft:appsec-rl"
->>>>>>> day2-b
 
     def _request(
         self,
