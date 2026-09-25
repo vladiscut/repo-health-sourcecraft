@@ -21,6 +21,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from django.core.cache import cache
 from django.db import transaction
 
 from health.models import (
@@ -46,6 +47,8 @@ from integrations.sourcecraft import (
 logger = logging.getLogger(__name__)
 
 CATEGORY = MetricSample.Category.DOCS
+
+CACHE_PREFIX = 'repo-tree-scan:'
 
 # Номинальный вес категории по ТЗ
 # Финальная перенормировка между всеми 6 категориями — задача
@@ -323,7 +326,8 @@ def _detect_ci_config_present(tree: dict[str, dict[str, Any]]) -> bool:
 
 def _collect_tree(
     client: SourceCraftClient,
-    repo,
+    repo: Repository,
+    scan_id: int,
 ) -> dict[str, dict[str, Any]] | None:
     """Возвращает нормализованное дерево репозитория или None при ошибке.
 
@@ -335,6 +339,7 @@ def _collect_tree(
         tree = client.get_repository_file_tree(
             repo.sourcecraft_id, repo.default_branch or None
         )
+        cache.set(CACHE_PREFIX + str(scan_id), tree, 60 * 30)  # 30 min
     except SourceCraftError as exc:
         logger.error(f"Не удалось получить дерево файлов {repo}: {exc}")
         return None
@@ -836,7 +841,7 @@ def run_docs_scan(
     repository = scan.repository
 
     # --- Сетевая часть: без открытой транзакции ---
-    tree = _collect_tree(client, repository)
+    tree = _collect_tree(client, repository, scan.id)
     if tree is None:
         with transaction.atomic():
             MetricSample.objects.update_or_create(

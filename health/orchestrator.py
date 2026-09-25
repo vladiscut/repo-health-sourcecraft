@@ -9,7 +9,7 @@
 import datetime
 import logging
 
-from celery import chord, group
+from celery import chord, group, chain
 
 from django.conf import settings
 from django.db import IntegrityError
@@ -332,8 +332,10 @@ def start_repository_scan(
                 "публичный запуск — категория не сканировалась",
             )
 
-    callback = task_aggregate_scan.s(scan.id).set(queue=queue)
-    chord(category_tasks)(callback)
+    category_tasks.append(task_aggregate_scan.s(scan.id).set(queue=queue))
+
+    chain(*category_tasks).set(queue=queue).apply_async()
+
     return scan.id
 
 
