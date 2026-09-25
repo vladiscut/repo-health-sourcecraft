@@ -71,7 +71,6 @@ class MyReposTests(TestCase):
         self.user.profile.refresh_from_db()
         self.assertFalse(self.user.profile.sourcecraft_pat)
         self.assertFalse(self.user.repository_access.exists())
-
     @patch("health.account.task_scan_user_repository.delay")
     def test_analyze_creates_pending_scan(self, delay):
         response = self.client.post(
@@ -138,3 +137,4 @@ class MyReposTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertFalse(Scan.objects.exists())
         delay.assert_not_called()
+
