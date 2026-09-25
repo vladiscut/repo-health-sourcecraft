@@ -33,6 +33,14 @@ class ScoringTests(SimpleTestCase):
         )
         self.assertEqual(presented["total"], 90)
         self.assertEqual(presented["level"], "ok")
+        self.assertEqual(len(presented["categories"]), 6)
+
+    def test_present_scores_keeps_missing_category(self):
+        presented = present_scores({MetricSample.Category.DOCS: 0})
+        by_name = dict(presented["categories"])
+        self.assertEqual(by_name["Документация"], 0)
+        self.assertIsNone(by_name["Security"])
+        self.assertEqual(len(presented["categories"]), 6)
         self.assertEqual(score_level(40), "low")
         self.assertEqual(score_level(None), "")
 

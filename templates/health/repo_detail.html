@@ -49,8 +49,13 @@
         {% for name, value in score.categories %}
         <li>
             <span>{{ name }}</span>
+            {% if value is None %}
+            <div class="bar"></div>
+            <b class="muted">Нет данных</b>
+            {% else %}
             <div class="bar"><i style="width: {{ value }}%"></i></div>
             <b>{{ value }}</b>
+            {% endif %}
         </li>
         {% endfor %}
     </ul>
