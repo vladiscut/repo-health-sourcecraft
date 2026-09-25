@@ -10,16 +10,14 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views import View
 from django.views.generic import DetailView, ListView
 
-from core.celery import USER_QUEUE_NAME
+from core.celery import USER_QUEUE_NAME, SCHEDULE_QUEUE_NAME
 from health.models import Repository, Scan, UserRepositoryAccess
 from health.scoring import present_scores
-from health.tasks import task_check_and_scan_repository, task_scan_user_repository
 from health.tasks import task_check_and_scan_repository
 from health.user_repository import user_can_access_repository
 
 
 PAGE_SIZE = 50
-SCHEDULE_QUEUE_NAME = "analysis.scheduled"
 
 
 SORTS = {
@@ -235,7 +233,7 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
         if request.GET.get("scan", "").lower() in {"1", "true", "yes"}:
             repo = self.get_repository()
             task_check_and_scan_repository.apply_async(
-                args=[repo.id, True],
+                args=[repo.id, None, True],
                 queue=SCHEDULE_QUEUE_NAME,
             )
             messages.info(request, "Плановый скан поставлен в очередь.")

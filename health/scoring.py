@@ -318,18 +318,18 @@ ACTIVITY_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD = 40
 # (Scan.TriggeredBy.USER / MANUAL): нагрузка минимальна (один git clone
 # на запуск), поэтому commits учитываются.
 ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS = {
-    "recent_activity": 0.35,
-    "contributors": 0.20,
+    "recent_activity": 0.40,
+    "contributors": 0.05,
     "merge_requests": 0.30,
-    "releases": 0.15,
+    "releases": 0.25,
 }
 
 ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS = {
-    "recent_activity": 0.30,
+    "recent_activity": 0.33,
     "commits": 0.20,
-    "contributors": 0.15,
-    "merge_requests": 0.20,
-    "releases": 0.15,
+    "contributors": 0.05,
+    "merge_requests": 0.22,
+    "releases": 0.20,
 }
 
 # Для recent_activity:

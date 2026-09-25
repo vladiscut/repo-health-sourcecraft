@@ -664,9 +664,6 @@ class SourceCraftFileClient(SourceCraftAPI):
             f"{_quote_repo_path(relative_path)}"
         )
 
-        if self.access_token:
-            url += f'?token={self.access_token}'
-
         self.rate_limiter.acquire()
         try:
             response = self.session.request(
