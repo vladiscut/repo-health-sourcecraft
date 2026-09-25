@@ -299,10 +299,9 @@ def start_repository_scan(
             f"Активный Scan для репозитория {repository_id} уже существует"
         ) from exc
 
+    # Публичные категории
     category_tasks = [
         task_docs_scan.si(scan.id).set(queue=queue),
-        task_cicd_scan.si(scan.id).set(queue=queue),
-        task_security_scan.si(scan.id).set(queue=queue),
         task_activity_scan.si(scan.id).set(queue=queue),
         task_code_health_scan.si(scan.id).set(queue=queue),
     ]
@@ -317,6 +316,21 @@ def start_repository_scan(
             MetricSample.Category.ISSUES,
             "в репозитории issues=0 — категория не сканировалась",
         )
+
+    # Приватные категории
+    if user_id:
+        category_tasks.append(task_cicd_scan.si(scan.id).set(queue=queue))
+        category_tasks.append(task_security_scan.si(scan.id).set(queue=queue))
+    else:
+        for category in (
+            MetricSample.Category.SECURITY,
+            MetricSample.Category.CI_CD,
+        ):
+            _fallback_health_score(
+                scan.id,
+                category,
+                "публичный запуск — категория не сканировалась",
+            )
 
     callback = task_aggregate_scan.s(scan.id).set(queue=queue)
     chord(category_tasks)(callback)
