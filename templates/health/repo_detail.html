@@ -31,16 +31,10 @@
 
 <div class="toolbar">
     {% if can_analyze %}
-    <form method="post" action="{% url 'health:analyze-my-repo' repo.org_slug repo.repo_slug %}" onsubmit="this.querySelector('button').classList.add('busy')">
+    <form method="post" action="{% url 'health:repo-rescan' repo.org_slug repo.repo_slug %}" onsubmit="this.querySelector('button').classList.add('busy')">
         {% csrf_token %}
         <input type="hidden" name="next" value="{% url 'health:repo-detail' repo.org_slug repo.repo_slug %}">
         <button type="submit">Запустить анализ</button>
-        <span class="loader" aria-hidden="true"></span>
-    </form>
-    {% else %}
-    <form method="post" action="{% url 'health:repo-rescan' repo.org_slug repo.repo_slug %}" onsubmit="this.querySelector('button').classList.add('busy')">
-        {% csrf_token %}
-        <button type="submit">Обновить сейчас</button>
         <span class="loader" aria-hidden="true"></span>
     </form>
     {% endif %}

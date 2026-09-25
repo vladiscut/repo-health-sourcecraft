@@ -386,14 +386,14 @@ def _find_root_file(
     for path_lower, entry in tree.items():
         if "/" in path_lower:
             continue
-        entry_type = str(entry.get("type") or "").lower()
+        entry_type = str(entry.get("type", "")).lower()
         if types and entry_type not in types:
             continue
         name_lower = path_lower
         if any(name_lower.startswith(p) for p in prefixes):
             return str(entry.get("path") or entry.get("name"))
-        if suffixes and any(name_lower.endswith(s) for s in suffixes):
-            return str(entry.get("path") or entry.get("name"))
+        #if suffixes and any(name_lower.endswith(s) for s in suffixes):
+        #    return str(entry.get("path") or entry.get("name"))
     return None
 
 
@@ -459,7 +459,6 @@ def _compute_metrics(
         content, reason = _read_file_safe(file_client, repo, readme_path)
         if content is None:
             metrics.readme_read_error = reason
-            logger.info(f"README {repo} не прочитан: {reason}")
         else:
             metrics.readme_size_chars = len(content)
             metrics.readme_has_local_run = _matches_any(content, LOCAL_RUN_PATTERNS)
@@ -478,7 +477,6 @@ def _compute_metrics(
         content, reason = _read_file_safe(file_client, repo, license_path)
         if content is None:
             metrics.license_read_error = reason
-            logger.info(f"LICENSE {repo} не прочитан: {reason}")
         else:
             recognized = any(
                 re.search(pattern, content, flags=re.IGNORECASE)
@@ -908,7 +906,12 @@ def run_docs_scan(
 
 def run(scan_id: int) -> int:
     client = SourceCraftClient()
-    file_client = SourceCraftFileClient()
     scan = Scan.objects.select_related("repository").get(pk=scan_id)
+
+    token = None
+    if scan.triggered_by_user_id:
+        token = scan.triggered_by_user.profile.sourcecraft_token
+
+    file_client = SourceCraftFileClient(token=token)
     health_score = run_docs_scan(scan, client, file_client)
     return health_score.pk

@@ -597,6 +597,21 @@ class SourceCraftClient(SourceCraftAPI):
         if branches:
             return branches[0].get("commit", {}).get("hash")
 
+    def get_pulls(self, repo_id: str, target_branch: str = None) -> list[dict[str, Any]]:
+        """Возвращает список pull requests репозитория"""
+
+        params: dict[str, Any] = {}
+        if target_branch:
+            params["target_branch"] = target_branch
+
+        return list(
+            self._paginate(
+                f"/repos/id:{repo_id}/pulls",
+                collection_key="pull_requests",
+                params=params,
+            )
+        )
+
 
 def _quote_repo_path(relative_path: str) -> str:
     """Кодирует сегменты пути и оставляет ``/`` между ними."""
@@ -648,6 +663,9 @@ class SourceCraftFileClient(SourceCraftAPI):
             f"{quote(revision, safe='')}/"
             f"{_quote_repo_path(relative_path)}"
         )
+
+        if self.access_token:
+            url += f'?token={self.access_token}'
 
         self.rate_limiter.acquire()
         try:

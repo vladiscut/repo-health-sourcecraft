@@ -135,6 +135,9 @@ def task_activity_scan(self, scan_id: int) -> int:
     except APIErr:
         raise
     except Exception as exc:
+        import traceback
+        error = traceback.format_exc()
+        print(error)
         return _fallback_health_score(
             scan_id, MetricSample.Category.ACTIVITY, str(exc)
         )
@@ -187,16 +190,16 @@ def task_reap_stale_scans() -> None:
 
 
 @shared_task
-def task_check_and_scan_repository(repository_id: int, force: bool = False) -> None:
+def task_check_and_scan_repository(
+    repository_id: int,
+    user_id: int = None,
+    force: bool = False,
+) -> None:
     """Проверка хеша + запуск скана при необходимости для олного репозитория"""
-
     from health.orchestrator import check_and_scan_repository
-    check_and_scan_repository(repository_id, force)
+    check_and_scan_repository(repository_id, force, user_id)
 
 
-@shared_task
-def task_scan_user_repository(repository_id: int) -> None:
-    """Скан репозитория пользователя"""
-
-    from health.user_repository import scan_user_repository
-    scan_user_repository(repository_id)
+def task_scan_user_repository(obj1, obj2):
+    # TODO delete
+    pass

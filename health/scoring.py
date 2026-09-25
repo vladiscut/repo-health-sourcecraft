@@ -298,6 +298,174 @@ def score_docs_category(metrics) -> tuple[int | None, float, dict[str, float]]:
 
 
 # --------------------------------------------------------------------
+# Activity: пороги, веса под-метрик и расчёт балла категории.
+# --------------------------------------------------------------------
+
+ACTIVITY_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD = 40
+
+# Два набора весов, сумма каждого = 1.0, независимо от
+# CATEGORY_WEIGHTS[ACTIVITY] (0.15) — перенормировка между всеми 6
+# категориями это отдельный шаг в health.orchestrator.aggregate_scan.
+#
+# WITHOUT_COMMITS — для массового планового скана (Scan.TriggeredBy.
+# SCHEDULE): commits туда не входят вообще, будто их и не было в схеме —
+# это тот же набор весов, что использовался до появления commits.
+# Причина: подсчёт commits требует git clone, а массовый скан бьёт по
+# тысячам публичных репозиториев — считать коммиты в этом сценарии
+# ресурсно неприемлемо (см. health/activity_scan.py).
+#
+# WITH_COMMITS — для одиночного ручного скана одного репозитория
+# (Scan.TriggeredBy.USER / MANUAL): нагрузка минимальна (один git clone
+# на запуск), поэтому commits учитываются.
+ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS = {
+    "recent_activity": 0.35,
+    "contributors": 0.20,
+    "merge_requests": 0.30,
+    "releases": 0.15,
+}
+
+ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS = {
+    "recent_activity": 0.30,
+    "commits": 0.20,
+    "contributors": 0.15,
+    "merge_requests": 0.20,
+    "releases": 0.15,
+}
+
+# Для recent_activity:
+# <= 7 дней — 100 баллов;
+# 7..30 дней — 100 -> 60 линейно;
+# 30..90 дней — 60 -> 0 линейно;
+# > 90 дней — 0.
+ACTIVITY_RECENT_ACTIVITY_FULL_DAYS = 7
+ACTIVITY_RECENT_ACTIVITY_MID_DAYS = 30
+ACTIVITY_RECENT_ACTIVITY_STALE_DAYS = 90
+
+ACTIVITY_LOOKBACK_DAYS = 30
+
+# Contributors: 0 -> 0; 1 -> 30; 10+ -> 100.
+ACTIVITY_SINGLE_CONTRIBUTOR_SCORE = 30
+ACTIVITY_CONTRIBUTORS_FOR_FULL_SCORE = 10
+
+# Merge requests за ACTIVITY_LOOKBACK_DAYS: 0 -> 0; 10+ -> 100.
+ACTIVITY_MERGE_REQUESTS_FOR_FULL_SCORE = 10
+
+# Releases за ACTIVITY_LOOKBACK_DAYS: 0 -> 0; 3+ -> 100.
+ACTIVITY_RELEASES_FOR_FULL_SCORE = 3
+
+# Commits за ACTIVITY_LOOKBACK_DAYS: 0 -> 0; 1 -> 15; 20+ (~5/неделю) -> 100.
+# Считается только при include_commits=True.
+ACTIVITY_SINGLE_COMMIT_SCORE = 15
+ACTIVITY_COMMITS_FOR_FULL_SCORE = 20
+
+
+def _score_recent_activity(last_activity_age_days: float | None) -> float | None:
+    if last_activity_age_days is None:
+        return None
+    age = max(0.0, last_activity_age_days)
+    if age <= ACTIVITY_RECENT_ACTIVITY_FULL_DAYS:
+        return 100.0
+    if age <= ACTIVITY_RECENT_ACTIVITY_MID_DAYS:
+        span = ACTIVITY_RECENT_ACTIVITY_MID_DAYS - ACTIVITY_RECENT_ACTIVITY_FULL_DAYS
+        return 100.0 - ((age - ACTIVITY_RECENT_ACTIVITY_FULL_DAYS) / span * 40.0)
+    if age <= ACTIVITY_RECENT_ACTIVITY_STALE_DAYS:
+        span = ACTIVITY_RECENT_ACTIVITY_STALE_DAYS - ACTIVITY_RECENT_ACTIVITY_MID_DAYS
+        return 60.0 - ((age - ACTIVITY_RECENT_ACTIVITY_MID_DAYS) / span * 60.0)
+    return 0.0
+
+
+def _score_activity_count(
+    count: int | None,
+    *,
+    full_score_count: int,
+    score_at_one: float = 0.0,
+) -> float | None:
+    if count is None:
+        return None
+    count = max(0, count)
+    if count == 0:
+        return 0.0
+    if count == 1:
+        return score_at_one
+    if full_score_count <= 1:
+        return 100.0
+    ratio = (count - 1) / (full_score_count - 1)
+    return min(100.0, score_at_one + ratio * (100.0 - score_at_one))
+
+
+def score_activity_category(
+    metrics,
+    include_commits: bool,
+) -> tuple[int | None, float, dict[str, float]]:
+    """Считает балл категории Activity по уже собранным сырым метрикам.
+
+    ``metrics`` — объект с атрибутами:
+
+    - ``last_activity_age_days``
+    - ``contributors_count``
+    - ``merge_requests_30d``
+    - ``releases_30d``
+    - ``commits_30d`` — используется, только если ``include_commits=True``
+
+    ``include_commits`` решает, каким набором весов считать балл:
+    - True  — ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS (ручной скан одного
+      репозитория, commits реально посчитаны через git clone);
+    - False — ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS (массовый плановый
+      скан, commits сознательно не считаются, вес размазан по остальным
+      под-метрикам, как будто commits нет в схеме вовсе).
+
+    Возвращает ``(score_0_100_or_None, data_completeness_0_1, submetric_scores)``.
+    """
+
+    weights = (
+        ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS
+        if include_commits
+        else ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS
+    )
+    submetric_scores: dict[str, float] = {}
+
+    recent_activity_score = _score_recent_activity(metrics.last_activity_age_days)
+    if recent_activity_score is not None:
+        submetric_scores["recent_activity"] = recent_activity_score
+
+    if include_commits:
+        commits_score = _score_activity_count(
+            metrics.commits_30d,
+            full_score_count=ACTIVITY_COMMITS_FOR_FULL_SCORE,
+            score_at_one=ACTIVITY_SINGLE_COMMIT_SCORE,
+        )
+        if commits_score is not None:
+            submetric_scores["commits"] = commits_score
+
+    contributors_score = _score_activity_count(
+        metrics.contributors_count,
+        full_score_count=ACTIVITY_CONTRIBUTORS_FOR_FULL_SCORE,
+        score_at_one=ACTIVITY_SINGLE_CONTRIBUTOR_SCORE,
+    )
+    if contributors_score is not None:
+        submetric_scores["contributors"] = contributors_score
+
+    merge_requests_score = _score_activity_count(
+        metrics.merge_requests_30d,
+        full_score_count=ACTIVITY_MERGE_REQUESTS_FOR_FULL_SCORE,
+    )
+    if merge_requests_score is not None:
+        submetric_scores["merge_requests"] = merge_requests_score
+
+    releases_score = _score_activity_count(
+        metrics.releases_30d,
+        full_score_count=ACTIVITY_RELEASES_FOR_FULL_SCORE,
+    )
+    if releases_score is not None:
+        submetric_scores["releases"] = releases_score
+
+    return (*weighted_submetric_score(submetric_scores, weights), submetric_scores)
+
+
+
+
+
+# --------------------------------------------------------------------
 # Ниже — исходные упрощённые оценщики по остальным категориям. Они
 # заметно грубее, чем issues_scan.py/score_issues_category выше
 # (бинарные пороги вместо плавной шкалы, фиктивные data_completeness).

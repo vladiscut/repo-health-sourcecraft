@@ -16,6 +16,7 @@ from django.db import IntegrityError
 from django.db.models import F
 from django.utils import timezone
 
+from core.celery import USER_QUEUE_NAME, SCHEDULE_QUEUE_NAME
 from health.models import HealthScore, MetricSample, Repository, Scan
 from health.scoring import CATEGORY_WEIGHTS
 from health.tasks import (
@@ -129,7 +130,11 @@ def _is_effectively_empty(repository: Repository) -> bool:
     return bool(repository.is_empty) or not repository.default_branch
 
 
-def _create_empty_repo_scan(repository: Repository, triggered_by: str) -> int:
+def _create_empty_repo_scan(
+    repository: Repository,
+    triggered_by: str,
+    user_id: int | None
+) -> int:
     """Создаёт Scan для пустого репозитория без обращений к SourceCraft API.
 
     По каждой из 6 категорий пишем HealthScore с `total=None` ("Нет
@@ -149,6 +154,7 @@ def _create_empty_repo_scan(repository: Repository, triggered_by: str) -> int:
             repository=repository,
             status=Scan.Status.SUCCESS,
             triggered_by=triggered_by,
+            triggered_by_user_id=user_id,
             commit_sha_at_analysis="",
         )
     except IntegrityError as exc:
@@ -209,8 +215,8 @@ def _create_empty_repo_scan(repository: Repository, triggered_by: str) -> int:
 
 def start_repository_scan(
     repository_id: int,
-    triggered_by: str = Scan.TriggeredBy.SCHEDULE,
     force: bool = False,
+    user_id: int = None,
 ) -> int:
     """
     Создаёт Scan и раздаёт по одной задаче на каждую из категорий
@@ -232,9 +238,16 @@ def start_repository_scan(
     `force=True` отключает обе проверки "не изменился" и всегда
     запускает полный скан.
     """
+
     from health.tasks import task_aggregate_scan
 
     repository = Repository.objects.get(pk=repository_id)
+
+    queue = SCHEDULE_QUEUE_NAME
+    triggered_by = Scan.TriggeredBy.SCHEDULE
+    if user_id:
+        queue = USER_QUEUE_NAME
+        triggered_by = Scan.TriggeredBy.USER
 
     if _is_effectively_empty(repository):
         if not force and repository.last_commit_sha_processed == "":
@@ -246,7 +259,7 @@ def start_repository_scan(
                     f"scan={existing_scan.id}"
                 )
                 return existing_scan.id
-        return _create_empty_repo_scan(repository, triggered_by)
+        return _create_empty_repo_scan(repository, triggered_by, user_id)
 
     current_hash = _get_current_commit_hash(repository)
     last_commit = repository.last_commit_sha_processed
@@ -278,6 +291,7 @@ def start_repository_scan(
             repository=repository,
             status=Scan.Status.RUNNING,
             triggered_by=triggered_by,
+            triggered_by_user_id=user_id,
             commit_sha_at_analysis=current_hash or last_commit,
         )
     except IntegrityError as exc:
@@ -285,16 +299,15 @@ def start_repository_scan(
             f"Активный Scan для репозитория {repository_id} уже существует"
         ) from exc
 
+    # Публичные категории
     category_tasks = [
-        task_docs_scan.si(scan.id),
-        task_cicd_scan.si(scan.id),
-        task_security_scan.si(scan.id),
-        task_activity_scan.si(scan.id),
-        task_code_health_scan.si(scan.id),
+        task_docs_scan.si(scan.id).set(queue=queue),
+        task_activity_scan.si(scan.id).set(queue=queue),
+        task_code_health_scan.si(scan.id).set(queue=queue),
     ]
 
     if repository.issues > 0:
-        category_tasks.append(task_issues_scan.si(scan.id))
+        category_tasks.append(task_issues_scan.si(scan.id).set(queue=queue))
     else:
         # У репозитория нет ни одной задачи — категорию не сканируем
         # сразу помечаем "Нет данных".
@@ -304,8 +317,23 @@ def start_repository_scan(
             "в репозитории issues=0 — категория не сканировалась",
         )
 
-    chord(category_tasks)(task_aggregate_scan.s(scan.id))
+    # Приватные категории
+    if user_id:
+        category_tasks.append(task_cicd_scan.si(scan.id).set(queue=queue))
+        category_tasks.append(task_security_scan.si(scan.id).set(queue=queue))
+    else:
+        for category in (
+            MetricSample.Category.SECURITY,
+            MetricSample.Category.CI_CD,
+        ):
+            _fallback_health_score(
+                scan.id,
+                category,
+                "публичный запуск — категория не сканировалась",
+            )
 
+    callback = task_aggregate_scan.s(scan.id).set(queue=queue)
+    chord(category_tasks)(callback)
     return scan.id
 
 
@@ -413,14 +441,18 @@ def scan_all_public_repositories():
     return {"dispatched": len(repo_ids)}
 
 
-def check_and_scan_repository(repository_id: int, force: bool = False) -> dict:
+def check_and_scan_repository(
+    repository_id: int,
+    force: bool = False,
+    user_id: int = None,
+) -> dict:
     """Проверка хеша + запуск скана при необходимости"""
 
     try:
         scan_id = start_repository_scan(
             repository_id,
-            triggered_by=Scan.TriggeredBy.SCHEDULE,
             force=force,
+            user_id=user_id,
         )
         return {"repository_id": repository_id, "scan_id": scan_id}
     except ActiveScanExistsError:
