@@ -3,7 +3,6 @@ services:
     container_name: web-repo-health
     hostname: web-repo-health
     restart: always
-    image: web-repo-health:latest
     build:
       context: .
     env_file:
@@ -108,7 +107,6 @@ services:
   celery-user-repo-health:
     container_name: celery-user-repo-health
     restart: always
-    image: web-repo-health:latest
     build:
       context: .
     env_file:
@@ -137,7 +135,8 @@ services:
   celery-scheduled-repo-health:
     container_name: celery-scheduled-repo-health
     restart: always
-    image: web-repo-health:latest
+    build:
+      context: .
     env_file:
       - .env
     command: celery -A core worker -l info -P gevent -c 100 -Q analysis.scheduled
@@ -164,7 +163,6 @@ services:
   celery-beat-repo-health:
     container_name: celery-beat-repo-health
     restart: always
-    image: web-repo-health:latest
     build:
       context: .
     env_file:
