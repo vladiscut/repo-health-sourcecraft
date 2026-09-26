@@ -1,5 +1,7 @@
 from datetime import datetime
+from pathlib import Path
 
+from django.conf import settings
 from django.utils.dateparse import parse_datetime as parse_dt
 
 
@@ -27,3 +29,9 @@ def to_float(value: object) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def get_scan_repo_dir(scna_id):
+    path = f'{settings.SCAN_REPO_DIR}/{scna_id}'
+    Path(path).mkdir(parents=True, exist_ok=True)
+    return path

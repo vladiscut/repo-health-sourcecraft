@@ -9,7 +9,7 @@
 import datetime
 import logging
 
-from celery import chord, group, chain
+from celery import group, chain
 
 from django.conf import settings
 from django.db import IntegrityError
@@ -27,6 +27,7 @@ from health.tasks import (
     task_activity_scan,
     task_code_health_scan,
     task_check_and_scan_repository,
+    task_git_clone,
 )
 from integrations.sourcecraft import SourceCraftClient, SourceCraftError
 
@@ -299,12 +300,17 @@ def start_repository_scan(
             f"Активный Scan для репозитория {repository_id} уже существует"
         ) from exc
 
+    category_tasks = []
+    if user_id:
+        # Если скан запустил пользователь, то сперва получаем клон репозитория
+        category_tasks.append(task_git_clone.s(scan.id).set(queue=queue))
+
     # Публичные категории
-    category_tasks = [
+    category_tasks.extend([
         task_docs_scan.si(scan.id).set(queue=queue),
         task_activity_scan.si(scan.id).set(queue=queue),
         task_code_health_scan.si(scan.id).set(queue=queue),
-    ]
+    ])
 
     if repository.issues > 0:
         category_tasks.append(task_issues_scan.si(scan.id).set(queue=queue))
@@ -333,7 +339,6 @@ def start_repository_scan(
             )
 
     category_tasks.append(task_aggregate_scan.s(scan.id).set(queue=queue))
-
     chain(*category_tasks).set(queue=queue).apply_async()
 
     return scan.id
@@ -407,7 +412,9 @@ def aggregate_scan(scan_id: int) -> dict:
     Repository.objects.filter(pk=scan.repository_id).update(
         **repo_update_fields
     )
-
+    
+    print('================ agr')
+    print(datetime.datetime.now())
     return {
         "scan_id": scan.id,
         "status": scan.status,

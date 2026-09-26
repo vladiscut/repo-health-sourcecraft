@@ -339,7 +339,7 @@ def _collect_tree(
         tree = client.get_repository_file_tree(
             repo.sourcecraft_id, repo.default_branch or None
         )
-        cache.set(CACHE_PREFIX + str(scan_id), tree, 60 * 30)  # 30 min
+        # cache.set(CACHE_PREFIX + str(scan_id), tree, 60 * 30)  # 30 min
     except SourceCraftError as exc:
         logger.error(f"Не удалось получить дерево файлов {repo}: {exc}")
         return None

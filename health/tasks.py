@@ -196,10 +196,19 @@ def task_check_and_scan_repository(
     force: bool = False,
 ) -> None:
     """Проверка хеша + запуск скана при необходимости для олного репозитория"""
+
     from health.orchestrator import check_and_scan_repository
     check_and_scan_repository(repository_id, force, user_id)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=15)
+def task_git_clone(self, scan_id: int) -> list[int]:
+    """Клонирование репо"""
+
+    from health.git_clone import run
+    run(scan_id)
+
 
 def task_scan_user_repository(obj1, obj2):
     # TODO delete
     pass
-

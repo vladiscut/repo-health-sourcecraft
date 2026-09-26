@@ -151,6 +151,8 @@ FIELD_ENCRYPTION_KEYS = [
 
 SCAN_STALE_TIMEOUT_MINUTES = env.int("SCAN_STALE_TIMEOUT_MINUTES")
 
+SCAN_REPO_DIR = "/tmp/repos"
+
 LOGIN_URL = "health:yandex-login"
 LOGIN_REDIRECT_URL = "health:my-repos"
 LOGOUT_REDIRECT_URL = "health:repo-list"
