@@ -80,7 +80,7 @@ def get_repository_tree_cached(
     вызывающий код (docs_scan/code_health_scan) сам решает, как
     трактовать отсутствие данных, как и раньше.
     """
-    print('============== get_repository_tree_cached')
+
     redis_client = _get_redis()
     revision = repository.default_branch or None
     key = _cache_key(repository.sourcecraft_id, revision)

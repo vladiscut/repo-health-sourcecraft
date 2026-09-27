@@ -447,7 +447,6 @@ def score_activity_category(
     return (*weighted_submetric_score(submetric_scores, weights), submetric_scores)
 
 
-<<<<<<< HEAD
 # --------------------------------------------------------------------
 # Code health: пороги, веса под-метрик и расчёт балла категории.
 # --------------------------------------------------------------------
