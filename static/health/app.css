@@ -157,7 +157,9 @@ button {
 }
 button.busy { opacity: 0.6; }
 .loader { display: none; width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
-button.busy + .loader { display: inline-block; }
+button.busy + .loader,
+.loader.visible { display: inline-block; }
+.hero-score .loader.visible { width: 28px; height: 28px; margin-bottom: 8px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .bars { list-style: none; padding: 0; margin: 0; }
