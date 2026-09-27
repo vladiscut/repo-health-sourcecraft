@@ -186,7 +186,17 @@ def _compute_metrics(
 
 
 def _save_metric_samples(scan: Scan, metrics: _IssuesMetrics) -> None:
-    def _save(key: str, value: Any, unit: str = "", is_available: bool = True, reason: str = "") -> None:
+    def _save(
+        key: str,
+        value: Any,
+        unit: str = "",
+        is_available: bool = True,
+        reason: str = "",
+        source_reference: str = "",
+    ) -> None:
+        # Пустые/пробельные ссылки не сохраняем, чтобы поле не выглядело
+        # заполненным, когда подтверждающего артефакта фактически нет.
+        reference = (source_reference or "").strip()
         MetricSample.objects.update_or_create(
             scan=scan,
             category=CATEGORY,
@@ -196,28 +206,41 @@ def _save_metric_samples(scan: Scan, metrics: _IssuesMetrics) -> None:
                 unit=unit,
                 is_available=is_available,
                 error_reason=reason,
+                source_reference=reference[:500],
             ),
         )
 
-    _save("issues_total_count", metrics.total_count, "issues")
-    _save("issues_open_count", metrics.open_count, "issues")
-    _save("issues_closed_count", metrics.closed_count, "issues")
-    _save("issues_created_30d", metrics.created_30d, "issues")
-    _save("issues_closed_30d", metrics.closed_30d, "issues")
+    # Ссылка на репозиторий: подтверждает агрегаты по всему трекеру issues.
+    repo_url = (scan.repository.url or "").strip()
+    # Первая зависшая issue — более точное подтверждение для stale-метрик.
+    stale_ref = metrics.stale_issue_refs[0] if metrics.stale_issue_refs else ""
+
+    _save("issues_total_count", metrics.total_count, "issues", source_reference=repo_url)
+    _save("issues_open_count", metrics.open_count, "issues", source_reference=repo_url)
+    _save("issues_closed_count", metrics.closed_count, "issues", source_reference=repo_url)
+    _save("issues_created_30d", metrics.created_30d, "issues", source_reference=repo_url)
+    _save("issues_closed_30d", metrics.closed_30d, "issues", source_reference=repo_url)
     _save(
         "issues_close_rate_30d",
         metrics.close_rate_30d,
         "ratio",
         is_available=metrics.close_rate_30d is not None,
         reason="" if metrics.close_rate_30d is not None else "нет issues за период",
+        source_reference=repo_url if metrics.close_rate_30d is not None else "",
     )
-    _save("issues_stale_count", metrics.stale_count, "issues")
+    _save(
+        "issues_stale_count",
+        metrics.stale_count,
+        "issues",
+        source_reference=stale_ref,
+    )
     _save(
         "issues_stale_ratio",
         metrics.stale_ratio,
         "ratio",
         is_available=metrics.stale_ratio is not None,
         reason="" if metrics.stale_ratio is not None else "нет открытых issues",
+        source_reference=stale_ref if metrics.stale_ratio is not None else "",
     )
     _save(
         "issues_median_time_to_close_days",
@@ -225,6 +248,7 @@ def _save_metric_samples(scan: Scan, metrics: _IssuesMetrics) -> None:
         "days",
         is_available=metrics.median_time_to_close_days is not None,
         reason="" if metrics.median_time_to_close_days is not None else "нет закрытых issues с датами",
+        source_reference=repo_url if metrics.median_time_to_close_days is not None else "",
     )
     _save(
         "issues_median_first_response_hours",
@@ -232,6 +256,7 @@ def _save_metric_samples(scan: Scan, metrics: _IssuesMetrics) -> None:
         "hours",
         is_available=metrics.first_response_available,
         reason="" if metrics.first_response_available else "нет данных о комментариях в выборке",
+        source_reference=repo_url if metrics.first_response_available else "",
     )
 
 
@@ -293,7 +318,7 @@ def _build_findings(scan: Scan, metrics: _IssuesMetrics, category_score: float |
                         "Настройте триаж новых issues (например, еженедельный "
                         "разбор или auto-label) и целевой SLA на первый ответ."
                     ),
-                    evidence_refs=[],
+                    evidence_refs=[f"issues:first-response-sample:{metrics.first_response_sample_size}"],
                     estimated_score_impact=5,
                 )
             )
@@ -307,7 +332,7 @@ def _build_findings(scan: Scan, metrics: _IssuesMetrics, category_score: float |
                 title="Долгое время закрытия задач",
                 detail=f"Медианное время до закрытия issue — {metrics.median_time_to_close_days:.0f} дней.",
                 recommendation="Приоритизируйте разбор бэклога и разбивайте крупные задачи на более мелкие с понятным критерием закрытия.",
-                evidence_refs=[],
+                evidence_refs=["issues:time-to-close"],
                 estimated_score_impact=4,
             )
         )
@@ -371,6 +396,7 @@ def run_issues_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
                 defaults=dict(
                     value=None,
                     is_available=False,
+                    source_reference="",
                     error_reason=str(exc),
                 ),
             )

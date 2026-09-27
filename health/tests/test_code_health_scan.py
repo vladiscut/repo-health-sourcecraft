@@ -37,7 +37,7 @@ class ScanTodosTests(SimpleTestCase):
 
     def test_no_commit_sha_returns_empty(self):
         repo = self._repo(sha=None)
-        occurrences, error = _scan_todos(repo, [], 1)
+        occurrences, error = _scan_todos(repo, [], 1, Mock())
         self.assertEqual(occurrences, [])
         self.assertEqual(error, "нет хеша последнего коммита")
 
@@ -48,7 +48,7 @@ class ScanTodosTests(SimpleTestCase):
             with patch("health.code_health_scan.get_scan_repo_dir") as get_dir:
                 get_dir.return_value = Path(tmp)
                 repo = self._repo("abc")
-                occurrences, error = _scan_todos(repo, ["src/main.py"], 1)
+                occurrences, error = _scan_todos(repo, ["src/main.py"], 1, Mock())
         self.assertEqual(occurrences, [("src/main.py", 1)])
         self.assertEqual(error, "")
 
@@ -59,7 +59,7 @@ class ScanTodosTests(SimpleTestCase):
             with patch("health.code_health_scan.get_scan_repo_dir") as get_dir:
                 get_dir.return_value = Path(tmp)
                 repo = self._repo("abc")
-                occurrences, error = _scan_todos(repo, ["src/main.py"], 1)
+                occurrences, error = _scan_todos(repo, ["src/main.py"], 1, Mock())
         self.assertEqual(occurrences, [])
         self.assertEqual(error, "")
 
@@ -68,7 +68,7 @@ class ScanTodosTests(SimpleTestCase):
             with patch("health.code_health_scan.get_scan_repo_dir") as get_dir:
                 get_dir.return_value = Path(tmp)
                 repo = self._repo("abc")
-                occurrences, error = _scan_todos(repo, ["src/main.py"], 1)
+                occurrences, error = _scan_todos(repo, ["src/main.py"], 1, Mock())
         self.assertEqual(occurrences, [])
         self.assertEqual(error, "не удалось прочитать ни один из отобранных файлов")
 
@@ -77,7 +77,7 @@ class ScanTodosTests(SimpleTestCase):
             with patch("health.code_health_scan.get_scan_repo_dir") as get_dir:
                 get_dir.return_value = Path(tmp)
                 repo = self._repo("abc")
-                occurrences, error = _scan_todos(repo, ["src/main.py"], 1)
+                occurrences, error = _scan_todos(repo, ["src/main.py"], 1, Mock())
         self.assertEqual(occurrences, [])
         self.assertEqual(error, "не удалось прочитать ни один из отобранных файлов")
 
@@ -165,6 +165,7 @@ class ComputeMetricsTests(SimpleTestCase):
                     tree=tree,
                     include_todo_age=False,
                     scan_id=1,
+                    file_client=None,
                 )
 
     def test_dependency_manifest_present(self):
@@ -291,6 +292,7 @@ class FallbackRenormalizationTests(SimpleTestCase):
                 metrics = _compute_metrics(
                     git_client=None, repository=self._repo(),
                     tree=tree, include_todo_age=True, scan_id=1,
+                    file_client=None,
                 )
         self.assertFalse(metrics.clone_available)
         self.assertIsNone(metrics.todo_total_count)
@@ -315,6 +317,7 @@ class FallbackRenormalizationTests(SimpleTestCase):
                 metrics = _compute_metrics(
                     git_client=None, repository=self._repo(),
                     tree=tree, include_todo_age=True, scan_id=1,
+                    file_client=None,
                 )
 
         score, completeness, submetrics = score_code_health_category(metrics)
@@ -338,11 +341,14 @@ class FallbackRenormalizationTests(SimpleTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "src").mkdir(parents=True, exist_ok=True)
             Path(tmp, "src/main.py").write_text("print(1)\n", encoding="utf-8")
+            file_client = Mock()
+            file_client.get_file_text.return_value = "# TODO: implement\nprint(1)\n"
             with patch("health.code_health_scan.get_scan_repo_dir") as get_dir:
                 get_dir.return_value = Path(tmp)
                 metrics = _compute_metrics(
                     git_client=None, repository=self._repo(),
                     tree=tree, include_todo_age=False, scan_id=1,
+                    file_client=file_client,
                 )
 
         score, completeness, submetrics = score_code_health_category(metrics)

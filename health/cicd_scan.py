@@ -79,6 +79,8 @@ def _save_unavailable(scan: Scan, reason: str) -> HealthScore:
                 value=None,
                 is_available=False,
                 error_reason=reason[:255],
+                # Подтверждающего артефакта нет — ссылку очищаем явно.
+                source_reference="",
             ),
         )
         health_score, _ = HealthScore.objects.update_or_create(
@@ -103,6 +105,9 @@ def _save_metric(
     reason: str = "",
     source_reference: str = "",
 ) -> None:
+    # source_reference необязателен: пустые/пробельные значения не сохраняем
+    # как «ссылку», иначе поле будет выглядеть заполненным, но бесполезным.
+    reference = (source_reference or "").strip()
     MetricSample.objects.update_or_create(
         scan=scan,
         category=CATEGORY,
@@ -112,7 +117,7 @@ def _save_metric(
             unit=unit,
             is_available=is_available,
             error_reason=reason,
-            source_reference=source_reference,
+            source_reference=reference[:500],
         ),
     )
 
@@ -254,7 +259,7 @@ def _build_findings(
                     f"{stats.median_duration_minutes:.0f} мин."
                 ),
                 recommendation="Сократите пайплайн: кэш зависимостей и меньше шагов на каждый push.",
-                evidence_refs=[],
+                evidence_refs=[stats.last_red_url] if stats.last_red_url else [],
                 estimated_score_impact=5,
             )
         )
@@ -280,6 +285,8 @@ def _save_scored(
             scan,
             "ci_config_present",
             config_present,
+            # Ссылку даём только когда конфиг реально найден — иначе
+            # source_reference останется пустым.
             source_reference=CI_CONFIG_PATH if config_present else "",
         )
         _save_metric(
@@ -289,7 +296,8 @@ def _save_scored(
             unit="ratio",
             is_available=runs_available,
             reason="" if runs_available else runs_reason,
-            source_reference="" if stats is None else stats.last_red_url,
+            # Подтверждающая ссылка — последний красный прогон (если он есть).
+            source_reference=(stats.last_red_url if stats is not None else ""),
         )
         _save_metric(
             scan,
@@ -298,6 +306,9 @@ def _save_scored(
             unit="minutes",
             is_available=duration_available,
             reason="" if duration_available else runs_reason,
+            # Медиана считается по завершённым прогонам; в качестве
+            # подтверждения используем последний известный проблемный прогон.
+            source_reference=(stats.last_red_url if stats is not None else ""),
         )
         _build_findings(scan, config_present, stats, total)
         raw = {

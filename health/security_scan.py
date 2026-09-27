@@ -69,6 +69,8 @@ def _save_unavailable(scan: Scan, reason: str) -> HealthScore:
                 value=None,
                 is_available=False,
                 error_reason=reason[:255],
+                # Подтверждающего артефакта нет — ссылку очищаем явно.
+                source_reference="",
             ),
         )
         health_score, _ = HealthScore.objects.update_or_create(
@@ -196,18 +198,40 @@ def _save_scored(scan: Scan, hits: list[_GroupHit], scan_uuid: str) -> HealthSco
     total = _score(hits)
     critical_count = sum(1 for hit in hits if hit.severity == "critical")
     high_count = sum(1 for hit in hits if hit.severity == "high")
+
+    # Первая открытая группа соответствующей критичности — как ссылка-
+    # подтверждение метрики. Если групп нет, ссылку не пишем.
+    critical_ref = next(
+        (hit.url for hit in hits if hit.severity == "critical" and hit.url),
+        "",
+    )
+    high_ref = next(
+        (hit.url for hit in hits if hit.severity == "high" and hit.url),
+        "",
+    )
+
     with transaction.atomic():
         MetricSample.objects.update_or_create(
             scan=scan,
             category=CATEGORY,
             metric_key="security_open_critical_count",
-            defaults=dict(value=critical_count, unit="groups", is_available=True),
+            defaults=dict(
+                value=critical_count,
+                unit="groups",
+                is_available=True,
+                source_reference=critical_ref[:500] if critical_count else "",
+            ),
         )
         MetricSample.objects.update_or_create(
             scan=scan,
             category=CATEGORY,
             metric_key="security_open_high_count",
-            defaults=dict(value=high_count, unit="groups", is_available=True),
+            defaults=dict(
+                value=high_count,
+                unit="groups",
+                is_available=True,
+                source_reference=high_ref[:500] if high_count else "",
+            ),
         )
         _build_findings(scan, hits)
         health_score, _ = HealthScore.objects.update_or_create(

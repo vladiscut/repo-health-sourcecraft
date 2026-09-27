@@ -112,10 +112,10 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': crontab(minute=0, hour='*/12'),
     },
     # Сканирование метрик каждые 6 ч (00:30, 6:30, 12:30, 18:30)
-    #'scan_all_public_repositories': {
-    #    'task': 'health.tasks.task_scan_all_public_repositories',
-    #    'schedule': crontab(minute=30, hour='*/6'),
-    #},
+    'scan_all_public_repositories': {
+        'task': 'health.tasks.task_scan_all_public_repositories',
+        'schedule': crontab(minute=30, hour='*/6'),
+    },
     # Снимает зависшие сканы каждые 20 м
     'reap_stale_scans': {
         'task': 'health.tasks.task_reap_stale_scans',

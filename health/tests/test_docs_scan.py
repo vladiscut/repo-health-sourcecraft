@@ -182,7 +182,7 @@ class ReadFileSafeTests(SimpleTestCase):
     def test_missing_file(self):
         with patch("health.docs_scan.get_scan_repo_dir") as get_dir:
             get_dir.return_value = Path("/tmp/nonexistent-scan-clone")
-            content, reason = _read_file_safe(1, self._repo(None), "README.md")
+            content, reason = _read_file_safe(1, self._repo(None), "README.md", Mock())
         self.assertIsNone(content)
         self.assertEqual(reason, "файл не найден в клоне")
 
@@ -191,7 +191,7 @@ class ReadFileSafeTests(SimpleTestCase):
             Path(tmp, "README.md").write_text("# Project\n", encoding="utf-8")
             with patch("health.docs_scan.get_scan_repo_dir") as get_dir:
                 get_dir.return_value = Path(tmp)
-                content, reason = _read_file_safe(1, self._repo("abc"), "README.md")
+                content, reason = _read_file_safe(1, self._repo("abc"), "README.md", Mock())
         self.assertEqual(content, "# Project\n")
         self.assertEqual(reason, "")
 
@@ -202,7 +202,7 @@ class ReadFileSafeTests(SimpleTestCase):
             )
             with patch("health.docs_scan.get_scan_repo_dir") as get_dir:
                 get_dir.return_value = Path(tmp)
-                content, reason = _read_file_safe(1, self._repo("abc"), "README.md")
+                content, reason = _read_file_safe(1, self._repo("abc"), "README.md", Mock())
         self.assertEqual(len(content), README_MAX_CHARS)
         self.assertEqual(reason, "")
 
@@ -221,7 +221,7 @@ class ComputeMetricsTests(SimpleTestCase):
                 full.write_text(content, encoding="utf-8")
             with patch("health.docs_scan.get_scan_repo_dir") as get_dir:
                 get_dir.return_value = Path(tmp)
-                return _compute_metrics(1, self._repo(), tree)
+                return _compute_metrics(1, self._repo(), tree, Mock())
 
     def test_readme_present_metrics(self):
         content = (
@@ -358,10 +358,19 @@ class DocsScanTests(TestCase):
         """Контекст-менеджер: временный клон + патч get_scan_repo_dir."""
         return _TempClone(files or {})
 
+    def _file_client(self, files=None):
+        """Мок файлового клиента: отдаёт содержимое по пути из files."""
+        files = files or {}
+        client = Mock()
+        client.get_file_text.side_effect = lambda org, slug, path, sha: (
+            files[path]
+        )
+        return client
+
     def test_tree_none_writes_fetch_error(self):
         scan = self._scan()
         client = self._client(tree=None)
-        run_docs_scan(scan, client)
+        run_docs_scan(scan, client, None)
         sample = MetricSample.objects.get(
             scan=scan, metric_key="docs_fetch_error"
         )
@@ -373,8 +382,10 @@ class DocsScanTests(TestCase):
         scan = self._scan()
         tree = [_file("README.md"), _file("LICENSE")]
         client = self._client(tree=tree)
-        with self._clone({"README.md": "# Project\n", "LICENSE": "MIT License"}):
-            run_docs_scan(scan, client)
+        file_client = self._file_client(
+            {"README.md": "# Project\n", "LICENSE": "MIT License"}
+        )
+        run_docs_scan(scan, client, file_client)
         hs = HealthScore.objects.get(scan=scan, category=MetricSample.Category.DOCS)
         self.assertIn("readme_present", hs.raw_metrics)
         self.assertIn("submetric_scores", hs.raw_metrics)
@@ -382,7 +393,7 @@ class DocsScanTests(TestCase):
     def test_findings_no_readme(self):
         scan = self._scan()
         client = self._client(tree=[_file("main.py")])
-        run_docs_scan(scan, client)
+        run_docs_scan(scan, client, None)
         self.assertTrue(
             Finding.objects.filter(
                 scan=scan,

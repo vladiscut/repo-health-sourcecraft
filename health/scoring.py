@@ -281,12 +281,6 @@ def score_docs_category(metrics) -> tuple[int | None, float, dict[str, float]]:
             submetric_scores["license"] = 50.0
         elif metrics.license_type_recognized is True:
             submetric_scores["license"] = 100.0
-        # license_type_recognized is None (файл не прочитан) — ключ не
-        # добавляется, аналогично readme_quality выше.
-
-    # ... остальное без изменений (local_run, build_test,
-    # contributing_codeowners, structure_extras) — они и раньше корректно
-    # исключали None через "if metrics.X is not None".
 
     if not submetric_scores:
         return None, 0.0, submetric_scores
@@ -312,7 +306,7 @@ ACTIVITY_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD = 40
 # это тот же набор весов, что использовался до появления commits.
 # Причина: подсчёт commits требует git clone, а массовый скан бьёт по
 # тысячам публичных репозиториев — считать коммиты в этом сценарии
-# ресурсно неприемлемо (см. health/activity_scan.py).
+# ресурсно неприемлемо
 #
 # WITH_COMMITS — для одиночного ручного скана одного репозитория
 # (Scan.TriggeredBy.USER / MANUAL): нагрузка минимальна (один git clone
@@ -502,8 +496,7 @@ def _score_structure(metrics) -> float | None:
     """Оценивает "не свалка ли это" и "не data-only ли это".
 
     data-only репозиторий — это не код, поэтому по определению плохой
-    сигнал для категории Code health (см. ТЗ: "репозиторий, который
-    состоит только из CSV/JSON и не является кодом").
+    сигнал для категории Code health
     """
 
     if metrics.is_data_only_repo is None and metrics.is_flat_dump is None:

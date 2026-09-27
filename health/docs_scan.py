@@ -42,6 +42,7 @@ from integrations.git import get_scan_repo_dir
 from integrations.sourcecraft import (
     SourceCraftClient,
     SourceCraftError,
+    SourceCraftFileClient,
 )
 
 
@@ -351,7 +352,8 @@ def _collect_tree(
 def _read_file_safe(
     scan_id: int,
     repo: Repository,
-    path: str
+    path: str,
+    file_client: SourceCraftFileClient | None
 ) -> tuple[str | None, str]:
     """Читает содержимое файла из клонированной рабочей копии скана.
 
@@ -361,15 +363,24 @@ def _read_file_safe(
     вторым элементом кортежа как причина недоступности.
     """
 
-    repo_path = get_scan_repo_dir(scan_id)
-    file_path = Path(repo_path) / path
-
-    if not file_path.is_file():
-        return None, "файл не найден в клоне"
-    try:
-        content = file_path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return None, f"ошибка чтения файла: {exc}"
+    if repo.visibility == Repository.VisibilityType.PUBLIC:
+        try:
+            content = file_client.get_file_text(
+                repo.org_slug, repo.repo_slug, path, repo.scan_commit_sha
+            )
+        except SourceCraftError as exc:
+            if exc.status_code == 404:
+                return None, "файл не найден (404)"
+            return None, f"ошибка API: {exc}"
+    else:
+        repo_path = get_scan_repo_dir(scan_id)
+        file_path = Path(repo_path) / path
+        if not file_path.is_file():
+            return None, "файл не найден в клоне"
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return None, f"ошибка чтения файла: {exc}"
 
     if len(content) > README_MAX_CHARS:
         content = content[:README_MAX_CHARS]
@@ -450,8 +461,9 @@ def _has_prefix_in(
 
 def _compute_metrics(
     scan_id: int,
-    repo,
+    repo: Repository,
     tree: dict[str, dict[str, Any]],
+    file_client: SourceCraftFileClient | None,
 ) -> _DocsMetrics:
     metrics = _DocsMetrics()
 
@@ -460,7 +472,7 @@ def _compute_metrics(
     metrics.readme_present = readme_path is not None
     metrics.readme_path = readme_path
     if readme_path:
-        content, reason = _read_file_safe(scan_id, repo, readme_path)
+        content, reason = _read_file_safe(scan_id, repo, readme_path, file_client)
         if content is None:
             metrics.readme_read_error = reason
         else:
@@ -474,7 +486,7 @@ def _compute_metrics(
     metrics.license_present = license_path is not None
     metrics.license_path = license_path
     if license_path:
-        content, reason = _read_file_safe(scan_id, repo, license_path)
+        content, reason = _read_file_safe(scan_id, repo, license_path, file_client)
         if content is None:
             metrics.license_read_error = reason
         else:
@@ -530,7 +542,11 @@ def _save_metric_samples(scan: Scan, metrics: _DocsMetrics) -> None:
         unit: str = "",
         is_available: bool = True,
         reason: str = "",
+        source_reference: str = "",
     ) -> None:
+        # Пустые/пробельные ссылки не сохраняем, чтобы поле не выглядело
+        # заполненным, когда подтверждающего артефакта фактически нет.
+        reference = (source_reference or "").strip()
         MetricSample.objects.update_or_create(
             scan=scan,
             category=CATEGORY,
@@ -540,6 +556,7 @@ def _save_metric_samples(scan: Scan, metrics: _DocsMetrics) -> None:
                 unit=unit,
                 is_available=is_available,
                 error_reason=reason,
+                source_reference=reference[:500],
             ),
         )
 
@@ -549,6 +566,8 @@ def _save_metric_samples(scan: Scan, metrics: _DocsMetrics) -> None:
         "bool",
         is_available=metrics.readme_present is not None,
         reason="" if metrics.readme_present is not None else "нет данных",
+        # Подтверждение — найденный файл README (если он есть).
+        source_reference=metrics.readme_path or "",
     )
     _save(
         "docs_readme_size_chars",
@@ -560,6 +579,7 @@ def _save_metric_samples(scan: Scan, metrics: _DocsMetrics) -> None:
             if metrics.readme_size_chars is not None
             else (metrics.readme_read_error or "README не прочитан")
         ),
+        source_reference=metrics.readme_path or "",
     )
     for key, value in (
         ("docs_readme_has_local_run", metrics.readme_has_local_run),
@@ -576,6 +596,7 @@ def _save_metric_samples(scan: Scan, metrics: _DocsMetrics) -> None:
                 if value is not None
                 else (metrics.readme_read_error or "нет данных")
             ),
+            source_reference=metrics.readme_path or "",
         )
 
     _save(
@@ -588,6 +609,7 @@ def _save_metric_samples(scan: Scan, metrics: _DocsMetrics) -> None:
             if metrics.license_type_recognized is not None
             else (metrics.license_read_error or "нет данных")
         ),
+        source_reference=metrics.license_path or "",
     )
 
     for key, value in (
@@ -600,7 +622,10 @@ def _save_metric_samples(scan: Scan, metrics: _DocsMetrics) -> None:
         ("docs_pr_template_present", metrics.pr_template_present),
         ("docs_ci_config_present", metrics.ci_config_present),
     ):
-        _save(key, value, "bool")
+        # Для license_present есть конкретный путь; для остальных флагов
+        # отдельные пути не сохраняются в _DocsMetrics — ссылку не выдумываем.
+        reference = metrics.license_path if key == "docs_license_present" else ""
+        _save(key, value, "bool", source_reference=reference or "")
 
 
 def _bump(severity: str, category_score: float | None) -> str:
@@ -635,7 +660,7 @@ def _build_findings(
                     "Добавьте README.md с описанием проекта, быстрым стартом, "
                     "инструкциями сборки и тестов."
                 ),
-                evidence_refs=[],
+                evidence_refs=["readme:not-found"],
                 estimated_score_impact=10,
             )
         )
@@ -718,7 +743,7 @@ def _build_findings(
                     "Добавьте LICENSE с выбранной лицензией (MIT, "
                     "Apache-2.0, GPL и т.п.)."
                 ),
-                evidence_refs=[],
+                evidence_refs=["license:not-found"],
                 estimated_score_impact=6,
             )
         )
@@ -775,7 +800,7 @@ def _build_findings(
                     "Добавьте CONTRIBUTING.md с процессом PR и CODEOWNERS "
                     "для автоназначения ревьюеров."
                 ),
-                evidence_refs=[],
+                evidence_refs=["contributing:not-found", "codeowners:not-found"],
                 estimated_score_impact=2,
             )
         )
@@ -795,7 +820,7 @@ def _build_findings(
                     "Заведите CHANGELOG.md и каталог docs/ для "
                     "пользовательской и разработческой документации."
                 ),
-                evidence_refs=[],
+                evidence_refs=["changelog:not-found", "docs-dir:not-found"],
                 estimated_score_impact=2,
             )
         )
@@ -829,6 +854,7 @@ def _build_findings(
 def run_docs_scan(
     scan: Scan,
     client: SourceCraftClient,
+    file_client: SourceCraftFileClient | None,
 ) -> HealthScore:
     """Собирает данные по документации репозитория и сохраняет результат."""
 
@@ -846,6 +872,9 @@ def run_docs_scan(
                     value=None,
                     is_available=False,
                     error_reason="не удалось получить дерево файлов",
+                    # Подтверждающего артефакта нет — ссылку очищаем явно,
+                    # чтобы не унаследовать её от предыдущего успешного прогона.
+                    source_reference="",
                 ),
             )
             health_score, _ = HealthScore.objects.update_or_create(
@@ -862,7 +891,7 @@ def run_docs_scan(
 
     repository.scan_commit_sha = scan.commit_sha_at_analysis
 
-    metrics = _compute_metrics(scan.id, repository, tree)
+    metrics = _compute_metrics(scan.id, repository, tree, file_client)
 
     # --- Чистая арифметика: без сети и без БД ---
     score, data_completeness, submetric_scores = score_docs_category(metrics)
@@ -904,12 +933,15 @@ def run_docs_scan(
 
 
 def run(scan_id: int) -> int:
-    scan = Scan.objects.select_related("repository").get(pk=scan_id)
+    scan = Scan.objects.select_related(
+        "triggered_by_user", "repository"
+    ).get(pk=scan_id)
 
     token = None
     if scan.triggered_by_user_id:
         token = scan.triggered_by_user.profile.sourcecraft_token
-    client = SourceCraftClient(token=token)
 
-    health_score = run_docs_scan(scan, client)
+    client = SourceCraftClient(token=token)
+    file_client = SourceCraftFileClient(token=token)
+    health_score = run_docs_scan(scan, client, file_client)
     return health_score.pk

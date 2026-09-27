@@ -118,6 +118,8 @@ def _fallback_health_score(scan_id: int, category: str, reason: str) -> int:
             value=None,
             is_available=False,
             error_reason=reason[:255],
+            # Подтверждающего артефакта нет — ссылку очищаем явно.
+            source_reference="",
         ),
     )
     logger.warning(
@@ -191,6 +193,8 @@ def _create_empty_repo_scan(
             value=None,
             is_available=False,
             error_reason=reason,
+            # Пустой репозиторий — подтверждающего артефакта нет.
+            source_reference="",
         )
         for category in ALL_CATEGORIES
     ]

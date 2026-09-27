@@ -243,7 +243,11 @@ def _save_metric_sample(
     *,
     is_available: bool = True,
     error_reason: str = "",
+    source_reference: str = "",
 ) -> None:
+    # Пустые/пробельные ссылки не сохраняем: поле должно оставаться пустым,
+    # если подтверждающего артефакта (файл/commit/MR/release) нет.
+    reference = (source_reference or "").strip()
     MetricSample.objects.update_or_create(
         scan=scan,
         category=CATEGORY,
@@ -253,20 +257,29 @@ def _save_metric_sample(
             "unit": unit,
             "is_available": is_available,
             "error_reason": error_reason[:255],
+            "source_reference": reference[:500],
         },
     )
 
 
 def _save_metric_samples(scan: Scan, metrics: _ActivityMetrics) -> None:
+    # Ссылка-подтверждение на сам репозиторий: для метрик, которые нельзя
+    # свести к одному commit/MR (агрегаты по истории), это лучший доступный
+    # стабильный источник.
+    repo_url = (scan.repository.url or "").strip()
+
     _save_metric_sample(
         scan, "activity_commits_30d", metrics.commits_30d, "commits",
         is_available=metrics.commits_30d is not None,
         error_reason=metrics.commits_fetch_error,
+        # Коммиты получены git clone'ом дефолтной ветки — ссылаемся на репо.
+        source_reference=repo_url if metrics.commits_30d is not None else "",
     )
     _save_metric_sample(
         scan, "activity_commit_frequency_week", metrics.commit_frequency_week, "commits/week",
         is_available=metrics.commit_frequency_week is not None,
         error_reason=metrics.commits_fetch_error,
+        source_reference=repo_url if metrics.commit_frequency_week is not None else "",
     )
 
     _save_metric_sample(
@@ -275,44 +288,56 @@ def _save_metric_samples(scan: Scan, metrics: _ActivityMetrics) -> None:
         "datetime",
         is_available=metrics.last_activity_at is not None,
         error_reason="" if metrics.last_activity_at is not None else "не удалось определить дату последней активности",
+        # Подтверждение — сам репозиторий (дата активности агрегируется из него).
+        source_reference=repo_url if metrics.last_activity_at is not None else "",
     )
     _save_metric_sample(
         scan, "activity_last_activity_age_days", metrics.last_activity_age_days, "days",
         is_available=metrics.last_activity_age_days is not None,
         error_reason="" if metrics.last_activity_age_days is not None else "не удалось определить возраст последней активности",
+        source_reference=repo_url if metrics.last_activity_age_days is not None else "",
     )
     _save_metric_sample(
         scan, "activity_last_activity_source", metrics.last_activity_source, "source",
         is_available=metrics.last_activity_at is not None,
         error_reason="" if metrics.last_activity_at is not None else "источник последней активности недоступен",
+        # last_activity_source — это маркер источника (напр. "merge_requests");
+        # ссылкой на файл/pipeline он не является, поэтому не сохраняем его.
+        source_reference=repo_url if metrics.last_activity_at is not None else "",
     )
 
     _save_metric_sample(
         scan, "activity_merge_requests_total", metrics.merge_requests_total, "merge requests",
         is_available=metrics.merge_requests_total is not None,
         error_reason="" if metrics.merge_requests_total is not None else metrics.fetch_errors.get("merge_requests", "merge requests недоступны"),
+        source_reference=repo_url if metrics.merge_requests_total is not None else "",
     )
     _save_metric_sample(
         scan, "activity_merge_requests_30d", metrics.merge_requests_30d, "merge requests",
         is_available=metrics.merge_requests_30d is not None,
         error_reason="" if metrics.merge_requests_30d is not None else metrics.fetch_errors.get("merge_requests", "merge requests недоступны"),
+        source_reference=repo_url if metrics.merge_requests_30d is not None else "",
     )
 
     _save_metric_sample(
         scan, "activity_releases_total", metrics.releases_total, "releases",
         is_available=metrics.releases_total is not None,
         error_reason="" if metrics.releases_total is not None else metrics.fetch_errors.get("releases", "releases недоступны"),
+        source_reference=repo_url if metrics.releases_total is not None else "",
     )
     _save_metric_sample(
         scan, "activity_releases_30d", metrics.releases_30d, "releases",
         is_available=metrics.releases_30d is not None,
         error_reason="" if metrics.releases_30d is not None else metrics.fetch_errors.get("releases", "releases недоступны"),
+        source_reference=repo_url if metrics.releases_30d is not None else "",
     )
 
     for endpoint, reason in metrics.fetch_errors.items():
         _save_metric_sample(
             scan, f"activity_{endpoint}_fetch_error", None,
             is_available=False, error_reason=reason,
+            # Для ошибки подтверждающего артефакта нет — ссылку не пишем.
+            source_reference="",
         )
 
 

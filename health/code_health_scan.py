@@ -66,6 +66,7 @@ from health.tree_cache import get_repository_tree_cached
 from integrations.sourcecraft import (
     SourceCraftClient,
     SourceCraftError,
+    SourceCraftFileClient,
 )
 from integrations.git import SourceCraftGitClient, get_scan_repo_dir
 
@@ -234,7 +235,9 @@ def _detect_generated(tree: dict[str, dict[str, Any]]) -> bool:
 
 
 def _detect_binary_junk(tree: dict[str, dict[str, Any]]) -> bool:
-    return any(path_lower.endswith(BINARY_JUNK_SUFFIXES) for path_lower in tree)
+    return any(
+        path_lower.endswith(BINARY_JUNK_SUFFIXES) for path_lower in tree
+    )
 
 
 def _classify_structure(
@@ -289,8 +292,7 @@ def _classify_structure(
 def _select_todo_candidate_files(tree: dict[str, dict[str, Any]]) -> list[str]:
     """Выбирает до CODE_HEALTH_MAX_TODO_SCAN_FILES файлов для поиска
     TODO/FIXME: только исходный код, вне вендоренных/сгенерированных
-    каталогов — читать содержимое node_modules/dist бессмысленно и
-    дорого по RPS.
+    каталогов — читать содержимое node_modules/dist бессмысленно и дорого
     """
 
     candidates: list[str] = []
@@ -312,6 +314,7 @@ def _scan_todos(
     repo: Repository,
     candidate_paths: list[str],
     scan_id: int,
+    file_client: SourceCraftFileClient,
 ) -> tuple[list[tuple[str, int]], str]:
     """Читает содержимое кандидатов и возвращает список (path, line_no)
     строк с TODO/FIXME/HACK/XXX, плюс общую ошибку сканирования (если
@@ -321,21 +324,35 @@ def _scan_todos(
     if not repo.scan_commit_sha:
         return [], "нет хеша последнего коммита"
 
-    repo_dir = Path(get_scan_repo_dir(scan_id))
-    if not repo_dir.is_dir():
-        return [], "клон репозитория недоступен (нет каталога скана)"
+    repo_dir = None
+    if repo.visibility != Repository.VisibilityType.PUBLIC:
+        repo_dir = Path(get_scan_repo_dir(scan_id))
+        if not repo_dir.is_dir():
+            return [], "клон репозитория недоступен"
 
     occurrences: list[tuple[str, int]] = []
     errors = 0
     for path in candidate_paths:
-        try:
-            repo_path = repo_dir / path
-            with open(repo_path, "r", encoding="utf-8") as file:
-                content = file.read()
-        except (SourceCraftError, OSError) as exc:
-            errors += 1
-            logger.debug(f"Не удалось прочитать {path} для TODO-скана: {exc}")
-            continue
+        if repo.visibility == Repository.VisibilityType.PUBLIC:
+            try:
+                content = file_client.get_file_text(
+                    repo.org_slug, repo.repo_slug, path, repo.scan_commit_sha
+                )
+            except SourceCraftError as exc:
+                if exc.status_code == 404:
+                    return None, "файл не найден (404)"
+                return None, f"ошибка API: {exc}"
+        else:
+            try:
+                repo_path = repo_dir / path
+                with open(repo_path, "r", encoding="utf-8") as file:
+                    content = file.read()
+            except (SourceCraftError, OSError) as exc:
+                errors += 1
+                logger.debug(
+                    f"Не удалось прочитать {path} для TODO-скана: {exc}"
+                )
+                continue
 
         if len(content) > CODE_HEALTH_FILE_MAX_CHARS:
             content = content[:CODE_HEALTH_FILE_MAX_CHARS]
@@ -357,9 +374,7 @@ def _compute_todo_age(
     occurrences: list[tuple[str, int]],
     now,
 ) -> tuple[int | None, str]:
-    """Возвращает (todo_old_count, error) по davности TODO через
-    git blame. Клон делается ОДИН раз на все файлы сразу (см.
-    SourceCraftGitClient.get_line_commit_dates)."""
+    """Возвращает (todo_old_count, error) по давности TODO через git blame"""
 
     line_specs: dict[str, list[int]] = {}
     for path, line_no in occurrences:
@@ -390,6 +405,7 @@ def _compute_metrics(
     tree: dict[str, dict[str, Any]],
     include_todo_age: bool,
     scan_id: int,
+    file_client: SourceCraftFileClient,
 ) -> _CodeHealthMetrics:
     metrics = _CodeHealthMetrics()
 
@@ -415,7 +431,9 @@ def _compute_metrics(
     # одного is_dir() недостаточно (скан по расписанию клон не делает).
     metrics.clone_available = repo_dir.is_dir() and any(repo_dir.iterdir())
 
-    occurrences, scan_error = _scan_todos(repository, candidate_paths, scan_id)
+    occurrences, scan_error = _scan_todos(
+        repository, candidate_paths, scan_id, file_client
+    )
     metrics.todo_scan_files_count = len(candidate_paths)
     metrics.todo_scan_error = scan_error
     metrics.todo_total_count = None if scan_error else len(occurrences)
@@ -429,8 +447,6 @@ def _compute_metrics(
         # Считать нечего, но и ошибки нет — 0 старых из 0.
         metrics.todo_old_count = 0
         metrics.todo_age_available = True
-    elif git_client is None:
-        metrics.todo_age_error = "нет git-клиента для определения давности TODO"
     else:
         old_count, error = _compute_todo_age(
             git_client, repository, scan_id, occurrences, timezone.now()
@@ -452,7 +468,11 @@ def _save_metric_samples(scan: Scan, metrics: _CodeHealthMetrics) -> None:
         unit: str = "",
         is_available: bool = True,
         reason: str = "",
+        source_reference: str = "",
     ) -> None:
+        # Пустые/пробельные ссылки не сохраняем, чтобы поле не выглядело
+        # заполненным, когда подтверждающего артефакта фактически нет.
+        reference = (source_reference or "").strip()
         MetricSample.objects.update_or_create(
             scan=scan,
             category=CATEGORY,
@@ -462,8 +482,13 @@ def _save_metric_samples(scan: Scan, metrics: _CodeHealthMetrics) -> None:
                 unit=unit,
                 is_available=is_available,
                 error_reason=reason,
+                source_reference=reference[:500],
             ),
         )
+
+    # Ссылка на сам репозиторий: подтверждает метрики, которые считаются
+    # по дереву/истории всего репозитория (агрегаты и TODO-скан).
+    repo_url = (scan.repository.url or "").strip()
 
     for key, value in (
         ("code_health_dependency_manifest_present", metrics.dependency_manifest_present),
@@ -476,6 +501,8 @@ def _save_metric_samples(scan: Scan, metrics: _CodeHealthMetrics) -> None:
         ("code_health_is_data_only_repo", metrics.is_data_only_repo),
         ("code_health_is_flat_dump", metrics.is_flat_dump),
     ):
+        # _CodeHealthMetrics не хранит конкретный путь найденного файла,
+        # поэтому здесь ссылку не выдумываем: это флаги по всему дереву.
         _save(
             key, value, "bool",
             is_available=value is not None,
@@ -485,24 +512,31 @@ def _save_metric_samples(scan: Scan, metrics: _CodeHealthMetrics) -> None:
     _save(
         "code_health_source_files_count", metrics.source_files_count, "files",
         is_available=metrics.source_files_count is not None,
+        source_reference=repo_url if metrics.source_files_count is not None else "",
     )
     _save(
         "code_health_total_files_count", metrics.total_files_count, "files",
         is_available=metrics.total_files_count is not None,
+        source_reference=repo_url if metrics.total_files_count is not None else "",
     )
     _save(
         "code_health_todo_scan_files_count", metrics.todo_scan_files_count, "files",
         is_available=True,
+        source_reference=repo_url if metrics.todo_scan_files_count else "",
     )
     _save(
         "code_health_todo_total_count", metrics.todo_total_count, "comments",
         is_available=metrics.todo_total_count is not None,
         reason=metrics.todo_scan_error,
+        # TODO найдены в файлах рабочей копии репозитория.
+        source_reference=repo_url if metrics.todo_total_count is not None else "",
     )
     _save(
         "code_health_todo_old_count", metrics.todo_old_count, "comments",
         is_available=metrics.todo_age_available,
         reason=metrics.todo_age_error,
+        # Давность TODO подтверждается историей коммитов того же репозитория.
+        source_reference=repo_url if metrics.todo_age_available else "",
     )
 
 
@@ -528,7 +562,7 @@ def _build_findings(
             title="Не найдено тестов",
             detail="В дереве репозитория не обнаружено ни каталогов tests/test/spec, ни файлов с типовыми именами тестов.",
             recommendation="Добавьте тесты хотя бы для критичной части кодовой базы и подключите их к CI.",
-            evidence_refs=[],
+            evidence_refs=["tests:not-found"],
             estimated_score_impact=10,
         ))
 
@@ -539,7 +573,7 @@ def _build_findings(
             title="Нет конфигурации линтера/форматтера",
             detail="В репозитории не найдено конфигов известных линтеров/форматтеров (ESLint, Ruff/Flake8, Prettier, rustfmt и т.п.).",
             recommendation="Подключите линтер и форматтер под используемый стек и зафиксируйте правила в конфиге.",
-            evidence_refs=[],
+            evidence_refs=["lint-config:not-found"],
             estimated_score_impact=5,
         ))
 
@@ -550,7 +584,7 @@ def _build_findings(
             title="Репозиторий похож на набор данных, а не на код",
             detail="В дереве найдены только data-файлы (CSV/JSON/...) и ни одного файла исходного кода.",
             recommendation="Если это действительно data-репозиторий — уберите его из анализа кода; если код должен быть, проверьте, не потерялся ли он.",
-            evidence_refs=[],
+            evidence_refs=["structure:data-only"],
             estimated_score_impact=6,
         ))
     elif metrics.is_flat_dump:
@@ -560,7 +594,7 @@ def _build_findings(
             title="Файлы свалены в корень без структуры",
             detail="Большая часть файлов лежит прямо в корне репозитория без разбиения на каталоги.",
             recommendation="Разнесите код по каталогам по смыслу (например src/, tests/, docs/).",
-            evidence_refs=[],
+            evidence_refs=["structure:flat-dump"],
             estimated_score_impact=3,
         ))
 
@@ -572,13 +606,20 @@ def _build_findings(
             junk_kinds.append("каталоги сборки (dist/build/target и т.п.)")
         if metrics.binary_junk_present:
             junk_kinds.append("скомпилированные/бинарные файлы")
+        junk_refs = []
+        if metrics.vendored_deps_present:
+            junk_refs.append("junk:vendored-deps")
+        if metrics.generated_artifacts_present:
+            junk_refs.append("junk:generated-artifacts")
+        if metrics.binary_junk_present:
+            junk_refs.append("junk:binary-files")
         findings.append(Finding(
             scan=scan, category=CATEGORY,
             severity=_bump(Finding.Severity.MEDIUM, category_score),
             title="В репозитории закоммичен мусор",
             detail="Обнаружены: " + "; ".join(junk_kinds) + ".",
             recommendation="Добавьте эти пути в .gitignore и удалите их из истории репозитория.",
-            evidence_refs=[],
+            evidence_refs=junk_refs,
             estimated_score_impact=6,
         ))
 
@@ -589,7 +630,7 @@ def _build_findings(
             title="Не найден манифест зависимостей",
             detail="В репозитории есть исходный код, но не найдено ни одного из известных файлов манифеста зависимостей.",
             recommendation="Зафиксируйте зависимости явным манифестом (package.json/pyproject.toml/go.mod и т.п.).",
-            evidence_refs=[],
+            evidence_refs=["manifest:not-found"],
             estimated_score_impact=3,
         ))
     elif metrics.dependency_manifest_present and metrics.lockfile_present is False:
@@ -599,7 +640,7 @@ def _build_findings(
             title="Нет lockfile",
             detail="Манифест зависимостей есть, но lockfile не найден — версии зависимостей не зафиксированы.",
             recommendation="Добавьте и закоммитьте lockfile (package-lock.json/poetry.lock/go.sum и т.п.) для воспроизводимых сборок.",
-            evidence_refs=[],
+            evidence_refs=["lockfile:not-found"],
             estimated_score_impact=2,
         ))
 
@@ -623,7 +664,7 @@ def _build_findings(
             title="Накопленные TODO/FIXME",
             detail=detail,
             recommendation="Проревизируйте старые TODO/FIXME: часть закройте, часть переведите в issues с владельцем.",
-            evidence_refs=[],
+            evidence_refs=[f"todos:{metrics.todo_total_count}"],
             estimated_score_impact=3,
         ))
 
@@ -634,7 +675,7 @@ def _build_findings(
             title="Не удалось просканировать файлы на TODO/FIXME",
             detail=f"Ошибка: {metrics.todo_scan_error}",
             recommendation="Проверьте доступность файлового API SourceCraft.",
-            evidence_refs=[],
+            evidence_refs=["todos:scan-error"],
             estimated_score_impact=0,
         ))
 
@@ -662,6 +703,7 @@ def run_code_health_scan(
     client: SourceCraftClient,
     git_client: SourceCraftGitClient | None,
     include_todo_age: bool,
+    file_client: SourceCraftFileClient,
 ) -> HealthScore:
     """Собирает данные по состоянию кода репозитория и сохраняет результат."""
 
@@ -681,6 +723,8 @@ def run_code_health_scan(
                     value=None,
                     is_available=False,
                     error_reason="не удалось получить дерево файлов",
+                    # Подтверждающего артефакта нет — ссылку очищаем явно.
+                    source_reference="",
                 ),
             )
             health_score, _ = HealthScore.objects.update_or_create(
@@ -704,7 +748,7 @@ def run_code_health_scan(
     repository.scan_commit_sha = scan.commit_sha_at_analysis
 
     metrics = _compute_metrics(
-        git_client, repository, tree, include_todo_age, scan.id
+        git_client, repository, tree, include_todo_age, scan.id, file_client
     )
 
     # --- Чистая арифметика: без сети и без БД ---
@@ -748,23 +792,30 @@ def run_code_health_scan(
 
 
 def run(scan_id: int) -> int:
-    scan = Scan.objects.select_related("repository").get(pk=scan_id)
+    scan = Scan.objects.select_related(
+        "triggered_by_user", "repository"
+    ).get(pk=scan_id)
 
     # Давность TODO по git-истории требует git clone,
     # поэтому считается только при одиночном ручном скане
-    include_todo_age = scan.triggered_by == Scan.TriggeredBy.USER
+    include_todo_age = False
 
     token = None
     if scan.triggered_by_user_id:
         token = scan.triggered_by_user.profile.sourcecraft_token
+        include_todo_age = True
+
+    if scan.repository.visibility == Repository.VisibilityType.PUBLIC:
+        include_todo_age = False
 
     client = SourceCraftClient(token=token)
+    file_client = SourceCraftFileClient(token=token)
 
     git_client = None
     if include_todo_age and token:
         git_client = SourceCraftGitClient(token=token)
 
     health_score = run_code_health_scan(
-        scan, client, git_client, include_todo_age
+        scan, client, git_client, include_todo_age, file_client
     )
     return health_score.pk
