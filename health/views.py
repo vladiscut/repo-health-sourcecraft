@@ -3,6 +3,7 @@
 from urllib.parse import urlencode
 
 from django.contrib import messages
+from django.db import IntegrityError
 from django.db.models import F, Prefetch, Q
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -14,6 +15,7 @@ from django.views.generic import DetailView, ListView
 from core.celery import USER_QUEUE_NAME, SCHEDULE_QUEUE_NAME
 from health.models import Finding, Repository, Scan, UserRepositoryAccess
 from health.reports import build_markdown_report
+from health.score_breakdown import rows_for_scores
 from health.scoring import CATEGORY_LABELS, present_scores
 from health.tasks import task_check_and_scan_repository
 from health.user_repository import user_can_access_repository
@@ -355,6 +357,7 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                 "strengths": strengths,
                 "weaknesses": weaknesses,
                 "has_null_categories": has_null,
+                "category_rows": rows_for_scores(scan.scores.all()) if scan else [],
                 "analyzed_at": scan.finished_at if scan else None,
                 "history": history,
                 "can_analyze": can_analyze,
@@ -382,11 +385,26 @@ class RepoRescanView(RepositoryAccessMixin, View):
         if _user_can_run_personal_scan(request.user, repo):
             user_id = request.user.id
             queue = USER_QUEUE_NAME
+            triggered_by = Scan.TriggeredBy.USER
         elif repo.visibility == Repository.VisibilityType.PUBLIC:
             user_id = None
             queue = SCHEDULE_QUEUE_NAME
+            triggered_by = Scan.TriggeredBy.SCHEDULE
         else:
             raise Http404()
+
+        # PENDING сразу в БД: после редиректа карточка покажет loader,
+        # а не предыдущий успешный Score, пока Celery ещё не стартовал.
+        try:
+            Scan.objects.create(
+                repository=repo,
+                status=Scan.Status.PENDING,
+                triggered_by=triggered_by,
+                triggered_by_user_id=user_id,
+            )
+        except IntegrityError:
+            messages.info(request, "Анализ этого репозитория уже идёт.")
+            return _repo_detail_redirect(request, org_slug, repo_slug)
 
         task_check_and_scan_repository.apply_async(
             kwargs={
@@ -396,7 +414,7 @@ class RepoRescanView(RepositoryAccessMixin, View):
             },
             queue=queue,
         )
-        messages.info(request, "Проверка поставлена в очередь.")
+        messages.info(request, "Анализ поставлен в очередь.")
         return _repo_detail_redirect(request, org_slug, repo_slug)
 
 
@@ -439,6 +457,13 @@ class RepoExportView(RepositoryAccessMixin, View):
         repo = self.get_repository()
         if fmt not in {"md", "pdf"}:
             raise Http404("Неизвестный формат")
+
+        if _active_scan(repo) is not None:
+            messages.info(
+                request,
+                "Выгрузка недоступна, пока идёт анализ. Дождитесь завершения.",
+            )
+            return _repo_detail_redirect(request, org_slug, repo_slug)
 
         filename = _safe_filename(org_slug, repo_slug)
         if fmt == "pdf":

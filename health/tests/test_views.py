@@ -152,6 +152,27 @@ class RepoDetailAndExportTests(TestCase):
         self.assertIsNotNone(response.context["score"])
         self.assertContains(response, "Нет данных")
         self.assertContains(response, "перераспределяется")
+        self.assertContains(response, "публичный запуск")
+
+    def test_detail_shows_what_score_is_made_of(self):
+        scan = _make_completed_scan(self.public, docs=98)
+        docs = scan.scores.get(category=MetricSample.Category.DOCS)
+        docs.raw_metrics = {
+            "readme_present": True,
+            "readme_size_chars": 3200,
+            "license_present": True,
+            "license_type_recognized": True,
+            "submetric_scores": {"readme_quality": 96, "license": 100},
+        }
+        docs.save(update_fields=["raw_metrics"])
+        response = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"])
+        )
+        self.assertContains(response, "README")
+        self.assertContains(response, "вес 60%")
+        self.assertContains(response, "3200 символов")
+        self.assertContains(response, "Лицензия")
+        self.assertContains(response, "тип распознан")
 
         Scan.objects.create(
             repository=self.public,
@@ -165,6 +186,8 @@ class RepoDetailAndExportTests(TestCase):
         self.assertIsNone(response.context["score"])
         self.assertContains(response, "Идёт анализ")
         self.assertContains(response, "data-scan-status-url")
+        self.assertNotContains(response, "Скачать Markdown")
+        self.assertNotContains(response, "Запустить анализ")
 
     def test_scan_status_pending_and_ready(self):
         url = reverse("health:repo-scan-status", args=["acme", "tools"])
@@ -218,6 +241,12 @@ class RepoDetailAndExportTests(TestCase):
             },
             queue="analysis.scheduled",
         )
+        self.assertTrue(
+            Scan.objects.filter(
+                repository=self.public,
+                status=Scan.Status.PENDING,
+            ).exists()
+        )
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
     def test_owner_rescan_uses_user_queue(self, apply_async):
@@ -238,6 +267,12 @@ class RepoDetailAndExportTests(TestCase):
             },
             queue="analysis.user",
         )
+        pending = Scan.objects.get(
+            repository=self.public,
+            status=Scan.Status.PENDING,
+        )
+        self.assertEqual(pending.triggered_by, Scan.TriggeredBy.USER)
+        self.assertEqual(pending.triggered_by_user_id, user.id)
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
     def test_public_stranger_rescan_uses_scheduled_queue(self, apply_async):
@@ -253,6 +288,41 @@ class RepoDetailAndExportTests(TestCase):
             },
             queue="analysis.scheduled",
         )
+        self.assertTrue(
+            Scan.objects.filter(
+                repository=self.public,
+                status=Scan.Status.PENDING,
+            ).exists()
+        )
+
+    @patch("health.views.task_check_and_scan_repository.apply_async")
+    def test_rescan_hides_old_score_immediately(self, apply_async):
+        _make_completed_scan(self.public)
+        response = self.client.post(
+            reverse("health:repo-rescan", args=["acme", "tools"]),
+            follow=True,
+        )
+        self.assertTrue(response.context["scan_in_progress"])
+        self.assertIsNone(response.context["score"])
+        self.assertContains(response, "Идёт анализ")
+        self.assertContains(response, "выгрузка недоступны")
+        self.assertNotContains(response, "Запустить анализ")
+        self.assertNotContains(response, "Скачать Markdown")
+        apply_async.assert_called_once()
+
+    def test_export_blocked_while_scan_in_progress(self):
+        Scan.objects.create(
+            repository=self.public,
+            status=Scan.Status.PENDING,
+            triggered_by=Scan.TriggeredBy.SCHEDULE,
+        )
+        detail = reverse("health:repo-detail", args=["acme", "tools"])
+        response = self.client.get(
+            reverse("health:repo-export", args=["acme", "tools", "md"]),
+            follow=True,
+        )
+        self.assertRedirects(response, detail)
+        self.assertContains(response, "Выгрузка недоступна")
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
     def test_rescan_while_active_does_not_queue_again(self, apply_async):

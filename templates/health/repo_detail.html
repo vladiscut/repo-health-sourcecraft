@@ -15,7 +15,7 @@
             · 👍 {{ repo.likes }} · ❤️ {{ repo.hearts }} · 💎 {{ repo.diamonds }}
             · {{ repo.forks }} форков
             {% if repo.url %}
-            · <a href="{{ repo.url }}">SourceCraft</a>
+            · <a href="{{ repo.url }}">ссылка на SourceCraft</a>
             {% endif %}
         </p>
         {% if analyzed_at and not scan_in_progress %}
@@ -49,24 +49,40 @@
         <span class="loader" aria-hidden="true"></span>
     </form>
     {% elif scan_in_progress %}
-    <span class="muted">Анализ уже запущен</span>
+    <span class="muted">Анализ уже идёт — запуск и выгрузка недоступны, пока скан в очереди или выполняется.</span>
     {% endif %}
+    {% if not scan_in_progress %}
     <a class="btn ghost" href="{% url 'health:repo-export' repo.org_slug repo.repo_slug 'md' %}">Скачать Markdown</a>
+    {% endif %}
 </div>
 
 {% if not scan_in_progress and score %}
 <section>
     <h2>Почему такой балл</h2>
     <ul class="bars">
-        {% for name, value in score.categories %}
+        {% for row in category_rows %}
         <li>
-            <span>{{ name }}</span>
-            {% if value is None %}
+            <span>{{ row.label }}</span>
+            {% if row.value is None %}
             <div class="bar"></div>
             <b class="muted">Нет данных</b>
             {% else %}
-            <div class="bar"><i style="width: {{ value }}%"></i></div>
-            <b>{{ value }}</b>
+            <div class="bar"><i style="width: {{ row.value }}%"></i></div>
+            <b>{{ row.value }}</b>
+            {% endif %}
+            {% if row.parts %}
+            <ul class="parts">
+                {% for part in row.parts %}
+                <li>
+                    <span>
+                        <span class="part-label">{{ part.label }}</span>
+                        {% if part.share != None %}<span class="part-meta">· вес {{ part.share }}%</span>{% endif %}
+                        {% if part.detail %}<span class="part-meta">· {{ part.detail }}</span>{% endif %}
+                    </span>
+                    {% if part.score != None %}<b>{{ part.score }}</b>{% endif %}
+                </li>
+                {% endfor %}
+            </ul>
             {% endif %}
         </li>
         {% endfor %}
