@@ -84,11 +84,9 @@ class DocsHelpersTests(SimpleTestCase):
         tree = _tree(_dir("readme"))
         self.assertIsNone(_find_root_file(tree, ("readme",)))
 
-    def test_find_root_file_suffixes(self):
+    def test_find_root_file_matches_name_with_extension(self):
         tree = _tree(_file("LICENSE.md"))
-        self.assertEqual(
-            _find_root_file(tree, ("license",), suffixes=(".md",)), "LICENSE.md"
-        )
+        self.assertEqual(_find_root_file(tree, ("license",)), "LICENSE.md")
 
     # -- _find_file_by_stem --------------------------------------------
 

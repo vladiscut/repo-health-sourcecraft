@@ -233,9 +233,6 @@ class Repository(models.Model):
     def percentile_display(self) -> str:
         return format_percentile(self.rating_percentile)
 
-    def latest_scan(self):
-        return self.scans.all().first()
-
     def latest_completed_scan(self):
         return self.scans.filter(
             status__in=[Scan.Status.SUCCESS, Scan.Status.PARTIAL]

@@ -378,10 +378,9 @@ def _matches_any(text: str, patterns: list[str]) -> bool:
 def _find_root_file(
     tree: dict[str, dict[str, Any]],
     prefixes: tuple[str, ...],
-    suffixes: tuple[str, ...] = (),
     types: tuple[str, ...] = ("file", "executable"),
 ) -> str | None:
-    """Ищет корневой файл по префиксу/суффиксу в нормализованном дереве."""
+    """Ищет корневой файл по префиксу имени в нормализованном дереве."""
 
     for path_lower, entry in tree.items():
         if "/" in path_lower:
@@ -389,11 +388,8 @@ def _find_root_file(
         entry_type = str(entry.get("type", "")).lower()
         if types and entry_type not in types:
             continue
-        name_lower = path_lower
-        if any(name_lower.startswith(p) for p in prefixes):
+        if any(path_lower.startswith(prefix) for prefix in prefixes):
             return str(entry.get("path") or entry.get("name"))
-        #if suffixes and any(name_lower.endswith(s) for s in suffixes):
-        #    return str(entry.get("path") or entry.get("name"))
     return None
 
 
@@ -466,11 +462,7 @@ def _compute_metrics(
             metrics.readme_has_structure = _matches_any(content, STRUCTURE_PATTERNS)
 
     # LICENSE
-    license_path = _find_root_file(
-        tree, ("license", "copying", "licence"), suffixes=(".md", ".txt")
-    )
-    if license_path is None:
-        license_path = _find_root_file(tree, ("license", "copying", "licence"))
+    license_path = _find_root_file(tree, ("license", "copying", "licence"))
     metrics.license_present = license_path is not None
     metrics.license_path = license_path
     if license_path:

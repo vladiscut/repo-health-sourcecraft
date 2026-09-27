@@ -40,7 +40,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from core.utils import parse_datetime
-from health.models import Finding, HealthScore, MetricSample, Scan, Repository, Profile
+from health.models import Finding, HealthScore, MetricSample, Scan, Repository
 from health.scoring import (
     ACTIVITY_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD,
     ACTIVITY_LOOKBACK_DAYS,
