@@ -6,6 +6,7 @@ from django.contrib import messages
 from django.db.models import F, Prefetch, Q
 from django.http import Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect
+from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.views import View
 from django.views.generic import DetailView, ListView
@@ -91,6 +92,20 @@ def _safe_filename(org_slug: str, repo_slug: str) -> str:
         for ch in raw
     )
     return cleaned[:180] or "repo-health"
+
+
+def _opened_from_personal_list(request: HttpRequest) -> bool:
+    return request.GET.get("from") == "me" or request.POST.get("from") == "me"
+
+
+def _repo_detail_redirect(request: HttpRequest, org_slug: str, repo_slug: str):
+    url = reverse(
+        "health:repo-detail",
+        kwargs={"org_slug": org_slug, "repo_slug": repo_slug},
+    )
+    if _opened_from_personal_list(request):
+        url = f"{url}?from=me"
+    return redirect(url)
 
 
 def _safe_next_url(request: HttpRequest, fallback: str) -> str:
@@ -237,11 +252,7 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                 queue=SCHEDULE_QUEUE_NAME,
             )
             messages.info(request, "Плановый скан поставлен в очередь.")
-            return redirect(
-                "health:repo-detail",
-                org_slug=repo.org_slug,
-                repo_slug=repo.repo_slug,
-            )
+            return _repo_detail_redirect(request, repo.org_slug, repo.repo_slug)
         return super().get(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
@@ -271,6 +282,7 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
             )
         else:
             can_analyze = True
+        from_me = _opened_from_personal_list(self.request)
         context.update(
             {
                 "scan": scan,
@@ -278,6 +290,12 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                 "findings": scan.findings.all() if scan else [],
                 "history": history,
                 "can_analyze": can_analyze,
+                "from_me": from_me,
+                "back_url": (
+                    reverse("health:my-repos")
+                    if from_me
+                    else reverse("health:repo-list")
+                ),
             }
         )
         return context
@@ -295,12 +313,7 @@ class RepoRescanView(RepositoryAccessMixin, View):
         )
 
         messages.info(request, "Проверка поставлена в очередь.")
-
-        return redirect(
-            "health:repo-detail",
-            org_slug=org_slug,
-            repo_slug=repo_slug,
-        )
+        return _repo_detail_redirect(request, org_slug, repo_slug)
 
 
 class RepoExportView(RepositoryAccessMixin, View):

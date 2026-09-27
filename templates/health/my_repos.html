@@ -55,7 +55,7 @@
         {% for item in items %}
         <tr>
             <td>
-                <a href="{% url 'health:repo-detail' item.repo.org_slug item.repo.repo_slug %}">
+                <a href="{% url 'health:repo-detail' item.repo.org_slug item.repo.repo_slug %}?from=me">
                     {{ item.repo.org_slug }}/{{ item.repo.repo_slug }}
                 </a>
                 <div class="muted">{{ item.repo.description|default:""|truncatechars:140 }}</div>
@@ -72,6 +72,7 @@
             <td>
                 <form method="post" action="{% url 'health:repo-rescan' item.repo.org_slug item.repo.repo_slug %}">
                     {% csrf_token %}
+                    <input type="hidden" name="from" value="me">
                     <input type="hidden" name="next" value="{% url 'health:my-repos' %}">
                     <button type="submit">Анализировать</button>
                 </form>
