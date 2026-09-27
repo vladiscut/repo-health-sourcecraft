@@ -163,7 +163,7 @@ def task_code_health_scan(self, scan_id: int) -> int:
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=15)
-def task_aggregate_scan(self, category_healthscore_ids, scan_id: int) -> None:
+def task_aggregate_scan(self, _category_healthscore_ids, scan_id: int) -> None:
     """Считает Repo Health Score по категориям"""
 
     from health.orchestrator import aggregate_scan

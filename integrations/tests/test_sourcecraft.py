@@ -349,7 +349,6 @@ class SourceCraftClientTests(SimpleTestCase):
             result = client.list_accessible_repositories()
         self.assertEqual([item["id"] for item in result], ["a", "b", "c"])
 
-
 @SETTINGS
 class SourceCraftFileClientTests(SimpleTestCase):
     def _client(self):

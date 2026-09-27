@@ -5,7 +5,7 @@ Scan.status итогового скана и не пересчитывает о�
 
 Он отвечает за:
 
-1. Получение merge requests, contributors и releases через SourceCraftClient.
+1. Получение merge requests и releases через SourceCraftClient.
 2. Получение истории коммитов дефолтной ветки за ACTIVITY_LOOKBACK_DAYS
    через SourceCraftGitClient (git clone --shallow-since) и расчёт
    количества/частоты коммитов.
@@ -23,7 +23,7 @@ Scan.status итогового скана и не пересчитывает о�
   (см. core/celery.py) с воркером на prefork-пуле, потому что git clone —
   блокирующая subprocess-операция, которая на gevent-пуле держит greenlet
   и не даёт освободить слот другим задачам этого воркера. Из-за этого
-  MR/contributors/releases для Activity тоже выполняются на этом воркере,
+  MR/releases для Activity тоже выполняются на этом воркере,
   а не на быстром gevent-пуле analysis.scheduled — это сознательный
   компромисс ради изоляции git-операций, а не побочный эффект.
 - собственная арифметика score находится в health.scoring.
@@ -40,7 +40,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from core.utils import parse_datetime
-from health.models import Finding, HealthScore, MetricSample, Scan, Repository, Profile
+from health.models import Finding, HealthScore, MetricSample, Scan, Repository
 from health.scoring import (
     ACTIVITY_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD,
     ACTIVITY_LOOKBACK_DAYS,
@@ -75,8 +75,6 @@ class _ActivityMetrics:
     last_activity_at: datetime | None = None
     last_activity_age_days: float | None = None
     last_activity_source: str = ""
-
-    contributors_count: int | None = None
 
     merge_requests_total: int | None = None
     merge_requests_30d: int | None = None
@@ -180,13 +178,6 @@ def _compute_metrics(
         metrics.fetch_errors["merge_requests"] = str(exc)
 
     try:
-        contributors = client.get_contributors(repo_id)
-    except SourceCraftError as exc:
-        logger.warning(f"Не удалось получить contributors для {repository}: {exc}")
-        contributors = None
-        metrics.fetch_errors["contributors"] = str(exc)
-
-    try:
         releases = client.get_releases(repo_id)
     except SourceCraftError as exc:
         logger.warning(f"Не удалось получить releases для {repository}: {exc}")
@@ -205,9 +196,6 @@ def _compute_metrics(
         )
         if mr_last_activity is not None:
             last_activity_candidates.append(("merge_requests", mr_last_activity))
-
-    if contributors is not None:
-        metrics.contributors_count = len(contributors)
 
     if releases is not None:
         metrics.releases_total = len(releases)
@@ -300,12 +288,6 @@ def _save_metric_samples(scan: Scan, metrics: _ActivityMetrics) -> None:
     )
 
     _save_metric_sample(
-        scan, "activity_contributors_count", metrics.contributors_count, "contributors",
-        is_available=metrics.contributors_count is not None,
-        error_reason="" if metrics.contributors_count is not None else metrics.fetch_errors.get("contributors", "contributors недоступны"),
-    )
-
-    _save_metric_sample(
         scan, "activity_merge_requests_total", metrics.merge_requests_total, "merge requests",
         is_available=metrics.merge_requests_total is not None,
         error_reason="" if metrics.merge_requests_total is not None else metrics.fetch_errors.get("merge_requests", "merge requests недоступны"),
@@ -392,17 +374,6 @@ def _build_findings(
             estimated_score_impact=4,
         ))
 
-    if metrics.contributors_count is not None and metrics.contributors_count <= 1:
-        findings.append(Finding(
-            scan=scan, category=CATEGORY,
-            severity=_bump(Finding.Severity.LOW, category_score),
-            title="Очень узкая база contributors",
-            detail=f"В SourceCraft найдено {metrics.contributors_count} contributor.",
-            recommendation="Зафиксируйте процесс участия и при необходимости расширьте круг contributors, чтобы снизить зависимость от одного владельца.",
-            evidence_refs=["contributors"],
-            estimated_score_impact=2,
-        ))
-
     if metrics.releases_total is not None and metrics.releases_total > 0 and metrics.releases_30d == 0:
         findings.append(Finding(
             scan=scan, category=CATEGORY,
@@ -431,7 +402,7 @@ def _build_findings(
             severity=Finding.Severity.LOW,
             title="Недостаточно данных для оценки категории Activity",
             detail="Не удалось получить ни одной метрики, которая участвует в расчёте Activity score.",
-            recommendation="Проверьте доступность SourceCraft API и git-протокола, а также формат данных merge requests, contributors, releases.",
+            recommendation="Проверьте доступность SourceCraft API и git-протокола, а также формат данных merge requests, releases.",
             evidence_refs=[],
             estimated_score_impact=0,
         ))
@@ -482,7 +453,6 @@ def run_activity_scan(
                     "last_activity_at": metrics.last_activity_at.isoformat() if metrics.last_activity_at is not None else None,
                     "last_activity_age_days": metrics.last_activity_age_days,
                     "last_activity_source": metrics.last_activity_source,
-                    "contributors_count": metrics.contributors_count,
                     "merge_requests_total": metrics.merge_requests_total,
                     "merge_requests_30d": metrics.merge_requests_30d,
                     "releases_total": metrics.releases_total,

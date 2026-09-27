@@ -28,7 +28,6 @@ class ComputeMetricsTests(TestCase):
     def _client(self, **kwargs):
         client = Mock()
         client.get_merge_requests.return_value = kwargs.get("mrs", [])
-        client.get_contributors.return_value = kwargs.get("contributors", [])
         client.get_releases.return_value = kwargs.get("releases", [])
         return client
 
@@ -40,32 +39,14 @@ class ComputeMetricsTests(TestCase):
         self.assertIsNone(metrics.commits_30d)
         self.assertIn("не считаются", metrics.commits_fetch_error)
 
-    def test_counts_mrs_releases_contributors(self):
-        recent = self.now - timedelta(days=1)
-        client = self._client(
-            mrs=[{"created_at": recent.isoformat()}],
-            contributors=[{"login": "a"}, {"login": "b"}],
-            releases=[{"published_at": recent.isoformat()}],
-        )
-        metrics = _compute_metrics(
-            client, None, self.repo, self.now, scan_id=self.scan.pk, include_commits=False
-        )
-        self.assertEqual(metrics.merge_requests_total, 1)
-        self.assertEqual(metrics.merge_requests_30d, 1)
-        self.assertEqual(metrics.contributors_count, 2)
-        self.assertEqual(metrics.releases_total, 1)
-        self.assertEqual(metrics.releases_30d, 1)
-
     def test_fetch_errors_recorded(self):
         client = Mock()
         client.get_merge_requests.side_effect = SourceCraftError("mrs fail")
-        client.get_contributors.side_effect = SourceCraftError("contrib fail")
         client.get_releases.side_effect = SourceCraftError("rel fail")
         metrics = _compute_metrics(
             client, None, self.repo, self.now, scan_id=self.scan.pk, include_commits=False
         )
         self.assertIn("merge_requests", metrics.fetch_errors)
-        self.assertIn("contributors", metrics.fetch_errors)
         self.assertIn("releases", metrics.fetch_errors)
         self.assertIsNone(metrics.merge_requests_total)
 
@@ -110,7 +91,6 @@ class SaveMetricSamplesTests(TestCase):
             last_activity_at=timezone.now(),
             last_activity_age_days=1.0,
             last_activity_source="commits",
-            contributors_count=3,
             merge_requests_total=2,
             merge_requests_30d=1,
             releases_total=4,
@@ -127,7 +107,6 @@ class SaveMetricSamplesTests(TestCase):
             "activity_last_activity_at",
             "activity_last_activity_age_days",
             "activity_last_activity_source",
-            "activity_contributors_count",
             "activity_merge_requests_total",
             "activity_merge_requests_30d",
             "activity_releases_total",
@@ -156,7 +135,6 @@ class BuildFindingsTests(TestCase):
     def test_no_findings_for_healthy(self):
         metrics = _ActivityMetrics(
             last_activity_age_days=1.0,
-            contributors_count=5,
             releases_total=3,
             releases_30d=1,
             merge_requests_30d=2,

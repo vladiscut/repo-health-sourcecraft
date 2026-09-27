@@ -4,7 +4,6 @@ from django.contrib.auth import get_user_model
 
 from health.models import Profile, Repository, UserRepositoryAccess
 from health.repository import prepare_repositories_data, _flush_repositories
-from health.tasks import task_check_and_scan_repository
 from integrations.sourcecraft import SourceCraftClient, SourceCraftError
 from integrations.yandex import token_expires_at
 

@@ -109,6 +109,34 @@ class RepoDetailAndExportTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Скачать Markdown")
         self.assertContains(response, "Скачать PDF")
+        self.assertContains(
+            response,
+            f'<a href="{reverse("health:repo-list")}">← К списку</a>',
+        )
+
+    def test_back_link_returns_to_personal_list(self):
+        user = get_user_model().objects.create_user("owner", password="x")
+        grant_access(user, self.public)
+        self.client.force_login(user)
+        response = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"]),
+            {"from": "me"},
+        )
+        self.assertContains(
+            response,
+            f'<a href="{reverse("health:my-repos")}">← К списку</a>',
+        )
+        self.assertContains(response, 'name="from" value="me"')
+
+    @patch("health.views.task_check_and_scan_repository.apply_async")
+    def test_rescan_keeps_return_to_personal_list(self, apply_async):
+        detail = reverse("health:repo-detail", args=["acme", "tools"])
+        response = self.client.post(
+            reverse("health:repo-rescan", args=["acme", "tools"]),
+            {"from": "me"},
+        )
+        self.assertRedirects(response, f"{detail}?from=me")
+        apply_async.assert_called_once()
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
     def test_scan_query_queues_scheduled_force_scan(self, apply_async):

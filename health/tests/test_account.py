@@ -50,6 +50,10 @@ class MyReposTests(TestCase):
         make_repo(org_slug="other", repo_slug="hidden", sourcecraft_id="other-1")
         response = self.client.get(reverse("health:my-repos"))
         self.assertContains(response, "ivan/app")
+        self.assertContains(
+            response,
+            f'{reverse("health:repo-detail", args=["ivan", "app"])}?from=me',
+        )
         self.assertNotContains(response, "other/hidden")
         self.assertContains(response, "Токен не задан")
         self.assertNotContains(response, "Отозвать токен")
