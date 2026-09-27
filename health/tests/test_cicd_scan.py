@@ -46,6 +46,11 @@ class CicdScanTests(TestCase):
         )
 
     def _client(self, tree, runs=None, runs_error=None) -> Mock:
+        tree_patch = patch(
+            "health.cicd_scan.get_repository_tree_cached", return_value=tree
+        )
+        tree_patch.start()
+        self.addCleanup(tree_patch.stop)
         client = Mock()
         client.get_repository_file_tree.return_value = tree
 

@@ -19,9 +19,9 @@ import logging
 import re
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from django.core.cache import cache
 from django.db import transaction
 
 from health.models import (
@@ -37,9 +37,10 @@ from health.scoring import (
     bump_severity,
     score_docs_category,
 )
+from health.tree_cache import get_repository_tree_cached
+from integrations.git import get_scan_repo_dir
 from integrations.sourcecraft import (
     SourceCraftClient,
-    SourceCraftFileClient,
     SourceCraftError,
 )
 
@@ -47,8 +48,6 @@ from integrations.sourcecraft import (
 logger = logging.getLogger(__name__)
 
 CATEGORY = MetricSample.Category.DOCS
-
-CACHE_PREFIX = 'repo-tree-scan:'
 
 # Номинальный вес категории по ТЗ
 # Финальная перенормировка между всеми 6 категориями — задача
@@ -336,10 +335,7 @@ def _collect_tree(
     """
 
     try:
-        tree = client.get_repository_file_tree(
-            repo.sourcecraft_id, repo.default_branch or None
-        )
-        # cache.set(CACHE_PREFIX + str(scan_id), tree, 60 * 30)  # 30 min
+        tree = get_repository_tree_cached(client, repo)
     except SourceCraftError as exc:
         logger.error(f"Не удалось получить дерево файлов {repo}: {exc}")
         return None
@@ -353,20 +349,27 @@ def _collect_tree(
 
 
 def _read_file_safe(
-    file_client: SourceCraftFileClient,
+    scan_id: int,
     repo: Repository,
     path: str
 ) -> tuple[str | None, str]:
-    if not repo.scan_commit_sha:
-        return None, "нет хеша последнего коммита"
+    """Читает содержимое файла из клонированной рабочей копии скана.
+
+    Работает по уже существующему локальному клону (см.
+    integrations.git.get_scan_repo_dir), без сетевых вызовов файлового
+    API SourceCraft. Отсутствие файла или ошибка чтения возвращаются
+    вторым элементом кортежа как причина недоступности.
+    """
+
+    repo_path = get_scan_repo_dir(scan_id)
+    file_path = Path(repo_path) / path
+
+    if not file_path.is_file():
+        return None, "файл не найден в клоне"
     try:
-        content = file_client.get_file_text(
-            repo.org_slug, repo.repo_slug, path, repo.scan_commit_sha
-        )
-    except SourceCraftError as exc:
-        if exc.status_code == 404:
-            return None, "файл не найден (404)"
-        return None, f"ошибка API: {exc}"
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return None, f"ошибка чтения файла: {exc}"
 
     if len(content) > README_MAX_CHARS:
         content = content[:README_MAX_CHARS]
@@ -450,7 +453,7 @@ def _has_prefix_in(
 
 
 def _compute_metrics(
-    file_client: SourceCraftFileClient,
+    scan_id: int,
     repo,
     tree: dict[str, dict[str, Any]],
 ) -> _DocsMetrics:
@@ -461,7 +464,7 @@ def _compute_metrics(
     metrics.readme_present = readme_path is not None
     metrics.readme_path = readme_path
     if readme_path:
-        content, reason = _read_file_safe(file_client, repo, readme_path)
+        content, reason = _read_file_safe(scan_id, repo, readme_path)
         if content is None:
             metrics.readme_read_error = reason
         else:
@@ -479,7 +482,7 @@ def _compute_metrics(
     metrics.license_present = license_path is not None
     metrics.license_path = license_path
     if license_path:
-        content, reason = _read_file_safe(file_client, repo, license_path)
+        content, reason = _read_file_safe(scan_id, repo, license_path)
         if content is None:
             metrics.license_read_error = reason
         else:
@@ -834,7 +837,6 @@ def _build_findings(
 def run_docs_scan(
     scan: Scan,
     client: SourceCraftClient,
-    file_client: SourceCraftFileClient,
 ) -> HealthScore:
     """Собирает данные по документации репозитория и сохраняет результат."""
 
@@ -868,7 +870,7 @@ def run_docs_scan(
 
     repository.scan_commit_sha = scan.commit_sha_at_analysis
 
-    metrics = _compute_metrics(file_client, repository, tree)
+    metrics = _compute_metrics(scan.id, repository, tree)
 
     # --- Чистая арифметика: без сети и без БД ---
     score, data_completeness, submetric_scores = score_docs_category(metrics)
@@ -910,13 +912,12 @@ def run_docs_scan(
 
 
 def run(scan_id: int) -> int:
-    client = SourceCraftClient()
     scan = Scan.objects.select_related("repository").get(pk=scan_id)
 
     token = None
     if scan.triggered_by_user_id:
         token = scan.triggered_by_user.profile.sourcecraft_token
+    client = SourceCraftClient(token=token)
 
-    file_client = SourceCraftFileClient(token=token)
-    health_score = run_docs_scan(scan, client, file_client)
+    health_score = run_docs_scan(scan, client)
     return health_score.pk

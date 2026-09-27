@@ -202,7 +202,7 @@ class SourceCraftAPI:
             raise NotImplementedError(
                 f"{type(self).__name__} должен задать BASE_URL_SETTING_NAME"
             )
-        if not token:
+        if token is None:
             token = settings.SOURCECRAFT_API_TOKEN
         self.access_token = token
         self.base_url = base_url.rstrip("/")

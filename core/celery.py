@@ -51,6 +51,8 @@ app.conf.task_routes = {
     "health.tasks.task_aggregate_scan": {"queue": SCHEDULE_QUEUE_NAME},
     # снимает зависшие сканы
     "health.tasks.task_reap_stale_scans": {"queue": SCHEDULE_QUEUE_NAME},
+    # удаляет каталоги клонов без Scan в БД
+    "health.tasks.task_reap_orphan_clone_dirs": {"queue": SCHEDULE_QUEUE_NAME},
     # проверка и запуск скана
     "health.tasks.task_check_and_scan_repository": {"queue": SCHEDULE_QUEUE_NAME},
     # скан репозитория пользователя

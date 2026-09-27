@@ -15,8 +15,11 @@ Scan.status итогового скана и не пересчитывает о�
    закоммиченные зависимости/сборки/бинарный мусор, "свалка ли это
    файлов", "data-only ли это репозиторий".
 3. Поиск TODO/FIXME (и т.п.) по содержимому не более
-   CODE_HEALTH_MAX_TODO_SCAN_FILES файлов (через SourceCraftFileClient,
-   как README/LICENSE в docs_scan.py).
+   CODE_HEALTH_MAX_TODO_SCAN_FILES файлов — чтением файлов из уже
+   существующего git-клона скана (get_scan_repo_dir), без сетевых
+   вызовов файлового API SourceCraft. Без клона (скан по расписанию)
+   todo-метрики помечаются недоступными, а веса категории
+   перенормируются по оставшимся под-метрикам.
 4. Давность найденных TODO по Git-истории — ТОЛЬКО при
    include_todo_age=True (одиночный ручной скан, см. ниже), тем же
    принципом, что include_commits в activity_scan.py: git clone —
@@ -40,6 +43,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
+from pathlib import Path
 
 from django.db import transaction
 from django.utils import timezone
@@ -61,7 +65,6 @@ from health.scoring import (
 from health.tree_cache import get_repository_tree_cached
 from integrations.sourcecraft import (
     SourceCraftClient,
-    SourceCraftFileClient,
     SourceCraftError,
 )
 from integrations.git import SourceCraftGitClient, get_scan_repo_dir
@@ -173,6 +176,12 @@ class _CodeHealthMetrics:
     todo_scan_error: str = ""
     todo_age_available: bool = False
     todo_age_error: str = ""
+
+    # Доступен ли git-клон скана. От него зависят todo_* метрики:
+    # без клона их нельзя посчитать, и они помечаются недоступными,
+    # а веса категории перенормируются (см. score_code_health_category
+    # и weighted_submetric_score).
+    clone_available: bool = False
 
     fetch_errors: dict[str, str] = field(default_factory=dict)
 
@@ -300,7 +309,6 @@ def _select_todo_candidate_files(tree: dict[str, dict[str, Any]]) -> list[str]:
 
 
 def _scan_todos(
-    file_client: SourceCraftFileClient,
     repo: Repository,
     candidate_paths: list[str],
     scan_id: int,
@@ -313,15 +321,18 @@ def _scan_todos(
     if not repo.scan_commit_sha:
         return [], "нет хеша последнего коммита"
 
+    repo_dir = Path(get_scan_repo_dir(scan_id))
+    if not repo_dir.is_dir():
+        return [], "клон репозитория недоступен (нет каталога скана)"
+
     occurrences: list[tuple[str, int]] = []
     errors = 0
     for path in candidate_paths:
         try:
-            repo_path = get_scan_repo_dir(scan_id)
-            file_path = repo_path + path
-            with open(file_path, "r", encoding="utf-8") as file:
+            repo_path = repo_dir / path
+            with open(repo_path, "r", encoding="utf-8") as file:
                 content = file.read()
-        except SourceCraftError as exc:
+        except (SourceCraftError, OSError) as exc:
             errors += 1
             logger.debug(f"Не удалось прочитать {path} для TODO-скана: {exc}")
             continue
@@ -342,6 +353,7 @@ def _scan_todos(
 def _compute_todo_age(
     git_client: SourceCraftGitClient,
     repository: Repository,
+    scan_id: int,
     occurrences: list[tuple[str, int]],
     now,
 ) -> tuple[int | None, str]:
@@ -355,8 +367,7 @@ def _compute_todo_age(
 
     try:
         dates_by_path = git_client.get_line_commit_dates(
-            org_slug=repository.org_slug,
-            repo_slug=repository.repo_slug,
+            scan_id=scan_id,
             branch=repository.default_branch,
             line_specs=line_specs,
         )
@@ -374,7 +385,6 @@ def _compute_todo_age(
 
 
 def _compute_metrics(
-    file_client: SourceCraftFileClient,
     git_client: SourceCraftGitClient | None,
     repository: Repository,
     tree: dict[str, dict[str, Any]],
@@ -399,12 +409,21 @@ def _compute_metrics(
     metrics.total_files_count = total_count
 
     candidate_paths = _select_todo_candidate_files(tree)
-    occurrences, scan_error = _scan_todos(file_client, repository, candidate_paths, scan_id)
+    repo_dir = Path(get_scan_repo_dir(scan_id))
+    # Клон считается доступным, только если каталог существует и непуст:
+    # get_scan_repo_dir() создаёт пустой каталог при первом вызове, поэтому
+    # одного is_dir() недостаточно (скан по расписанию клон не делает).
+    metrics.clone_available = repo_dir.is_dir() and any(repo_dir.iterdir())
+
+    occurrences, scan_error = _scan_todos(repository, candidate_paths, scan_id)
     metrics.todo_scan_files_count = len(candidate_paths)
     metrics.todo_scan_error = scan_error
     metrics.todo_total_count = None if scan_error else len(occurrences)
 
-    if not include_todo_age:
+    if scan_error:
+        # Скан TODO не удался (в т.ч. нет клона) — давность тоже недоступна.
+        metrics.todo_age_error = scan_error
+    elif not include_todo_age:
         metrics.todo_age_error = "давность TODO не считается при массовом плановом скане"
     elif not occurrences:
         # Считать нечего, но и ошибки нет — 0 старых из 0.
@@ -414,7 +433,7 @@ def _compute_metrics(
         metrics.todo_age_error = "нет git-клиента для определения давности TODO"
     else:
         old_count, error = _compute_todo_age(
-            git_client, repository, occurrences, timezone.now()
+            git_client, repository, scan_id, occurrences, timezone.now()
         )
         if error:
             metrics.todo_age_error = error
@@ -641,7 +660,6 @@ def _build_findings(
 def run_code_health_scan(
     scan: Scan,
     client: SourceCraftClient,
-    file_client: SourceCraftFileClient,
     git_client: SourceCraftGitClient | None,
     include_todo_age: bool,
 ) -> HealthScore:
@@ -686,7 +704,7 @@ def run_code_health_scan(
     repository.scan_commit_sha = scan.commit_sha_at_analysis
 
     metrics = _compute_metrics(
-        file_client, git_client, repository, tree, include_todo_age, scan.id
+        git_client, repository, tree, include_todo_age, scan.id
     )
 
     # --- Чистая арифметика: без сети и без БД ---
@@ -716,6 +734,7 @@ def run_code_health_scan(
                     "is_flat_dump": metrics.is_flat_dump,
                     "source_files_count": metrics.source_files_count,
                     "total_files_count": metrics.total_files_count,
+                    "clone_available": metrics.clone_available,
                     "todo_total_count": metrics.todo_total_count,
                     "todo_old_count": metrics.todo_old_count,
                     "todo_age_available": metrics.todo_age_available,
@@ -739,44 +758,13 @@ def run(scan_id: int) -> int:
     if scan.triggered_by_user_id:
         token = scan.triggered_by_user.profile.sourcecraft_token
 
-
-
-    '''
-
-
-    Проверить все *_scan.py что бы там передавался токен юзера
-
-    тут сделать file_client SourceCraftFileClient | SourceCraftGitClient
-
-
-
-    '''
-
-
-
     client = SourceCraftClient(token=token)
-    file_client = SourceCraftFileClient(token=token)
 
     git_client = None
     if include_todo_age and token:
         git_client = SourceCraftGitClient(token=token)
 
     health_score = run_code_health_scan(
-        scan, client, file_client, git_client, include_todo_age
+        scan, client, git_client, include_todo_age
     )
     return health_score.pk
-
-
-'''
-from django.core.cache import cache
-
-from health.docs_scan import CACHE_PREFIX
-
-
-def run(scan_id: int) -> int:
-    # TODO
-
-    #cache_key = CACHE_PREFIX + str(scan_id)
-    #tree = cache.get(cache_key)
-    #cache.delete(cache_key)
-'''

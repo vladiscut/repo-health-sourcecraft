@@ -98,6 +98,7 @@ STORAGES = {
 }
 
 REDIS_URL = env("REDIS_URL")
+REDIS_TREE_CACHE_URL = env("REDIS_TREE_CACHE_URL")
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND")
 CELERY_RESULT_BACKEND_THREAD_SAFE = True
@@ -119,6 +120,11 @@ CELERY_BEAT_SCHEDULE = {
     'reap_stale_scans': {
         'task': 'health.tasks.task_reap_stale_scans',
         'schedule': crontab(minute='*/20'),
+    },
+    # Удаляет каталоги клонов без Scan в БД каждый 1 ч
+    'reap_orphan_clone_dirs': {
+        'task': 'health.tasks.task_reap_orphan_clone_dirs',
+        'schedule': crontab(minute=0),
     },
 }
 

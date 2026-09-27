@@ -319,16 +319,14 @@ ACTIVITY_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD = 40
 # на запуск), поэтому commits учитываются.
 ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS = {
     "recent_activity": 0.40,
-    "contributors": 0.05,
     "merge_requests": 0.30,
-    "releases": 0.25,
+    "releases": 0.30,
 }
 
 ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS = {
-    "recent_activity": 0.33,
+    "recent_activity": 0.35,
     "commits": 0.20,
-    "contributors": 0.05,
-    "merge_requests": 0.22,
+    "merge_requests": 0.25,
     "releases": 0.20,
 }
 
@@ -344,8 +342,8 @@ ACTIVITY_RECENT_ACTIVITY_STALE_DAYS = 90
 ACTIVITY_LOOKBACK_DAYS = 30
 
 # Contributors: 0 -> 0; 1 -> 30; 10+ -> 100.
-ACTIVITY_SINGLE_CONTRIBUTOR_SCORE = 30
-ACTIVITY_CONTRIBUTORS_FOR_FULL_SCORE = 10
+#ACTIVITY_SINGLE_CONTRIBUTOR_SCORE = 30
+#ACTIVITY_CONTRIBUTORS_FOR_FULL_SCORE = 10
 
 # Merge requests за ACTIVITY_LOOKBACK_DAYS: 0 -> 0; 10+ -> 100.
 ACTIVITY_MERGE_REQUESTS_FOR_FULL_SCORE = 10
@@ -437,13 +435,13 @@ def score_activity_category(
         if commits_score is not None:
             submetric_scores["commits"] = commits_score
 
-    contributors_score = _score_activity_count(
-        metrics.contributors_count,
-        full_score_count=ACTIVITY_CONTRIBUTORS_FOR_FULL_SCORE,
-        score_at_one=ACTIVITY_SINGLE_CONTRIBUTOR_SCORE,
-    )
-    if contributors_score is not None:
-        submetric_scores["contributors"] = contributors_score
+    #contributors_score = _score_activity_count(
+    #    metrics.contributors_count,
+    #    full_score_count=ACTIVITY_CONTRIBUTORS_FOR_FULL_SCORE,
+    #    score_at_one=ACTIVITY_SINGLE_CONTRIBUTOR_SCORE,
+    #)
+    #if contributors_score is not None:
+    #    submetric_scores["contributors"] = contributors_score
 
     merge_requests_score = _score_activity_count(
         metrics.merge_requests_30d,

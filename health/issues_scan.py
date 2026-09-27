@@ -419,7 +419,12 @@ def run_issues_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
 
 
 def run(scan_id: int) -> int:
-    client = SourceCraftClient()
     scan = Scan.objects.select_related("repository").get(pk=scan_id)
+
+    token = None
+    if scan.triggered_by_user_id:
+        token = scan.triggered_by_user.profile.sourcecraft_token
+    client = SourceCraftClient(token=token)
+
     health_score = run_issues_scan(scan, client)
     return health_score.pk

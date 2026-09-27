@@ -191,6 +191,9 @@ class SourceCraftGitClient:
     операцию.
     """
 
+    _BLAME_AUTHOR_TIME_RE = re.compile(r"^author-time (\d+)$")
+    _MARKER_RE = re.compile(r"TODO|FIXME|FIX")
+
     def __init__(
         self,
         token: str | None = None,
@@ -226,10 +229,9 @@ class SourceCraftGitClient:
         try:
             with self.semaphore.lease():
                 repo_path = get_scan_repo_dir(scan_id)
-                if repo_path.exists():
-                    if os.listdir(repo_path):
-                        shutil.rmtree(repo_path)
-                        repo_path = get_scan_repo_dir(scan_id)
+                if Path(repo_path).exists() and os.listdir(repo_path):
+                    shutil.rmtree(repo_path)
+                    repo_path = get_scan_repo_dir(scan_id)
 
                 clone_kwargs: dict[str, object] = dict(
                     single_branch=True,
@@ -269,50 +271,117 @@ class SourceCraftGitClient:
         """Возвращает даты коммитов"""
 
         repo_path = get_scan_repo_dir(scan_id)
+        repo = None
 
         try:
             repo = Repo(repo_path)
-
-            if not repo.bare:
-                try:
-                    commit_dates = [
-                        c.committed_datetime for c in repo.iter_commits()
-                    ]
-                finally:
-                    repo.close()
-                return commit_dates
-            else:
+            if repo.bare:
                 raise SourceCraftError(
                     f"Это bare-репозиторий (без рабочей директории файлов) {repo_path}",
                 )
+            return [c.committed_datetime for c in repo.iter_commits()]
+        except SourceCraftError:
+            raise
         except Exception as exc:
             raise SourceCraftError(
                 f"Не удалось открыть репозиторий по пути {repo_path}: {exc}"
             ) from exc
         finally:
-            repo.close()
+            if repo is not None:
+                repo.close()
 
-    def scan_repository(repo_path: str) -> list:
-        keywords = '|'.join(('TODO', 'FIXME', 'FIX'))
-        lines = []
+    @staticmethod
+    def scan_markers(repo_path: str) -> list[str]:
+        """Возвращает строки с маркерами TODO/FIXME/FIX через `git grep`.
 
+        Формат строки: `<путь>:<номер>:<содержимое>`. Метод статический:
+        работает по уже существующему локальному клону, без сети.
+        """
+
+        keywords = "|".join(("TODO", "FIXME", "FIX"))
+        repo: Repo | None = None
         try:
             repo = Repo(repo_path)
             grep_output = repo.git.grep("-n", "-E", keywords)
-            lines = grep_output.splitlines()
+            return grep_output.splitlines()
+        except GitCommandError as exc:
+            # git grep возвращает код 1, когда совпадений нет — это не ошибка.
+            if exc.status == 1:
+                return []
+            raise SourceCraftError(
+                f"Не удалось просканировать репозиторий {repo_path}: {exc}"
+            ) from exc
         except Exception as exc:
             raise SourceCraftError(
                 f"Не удалось просканировать репозиторий {repo_path}: {exc}"
             ) from exc
         finally:
-            repo.close()
+            if repo is not None:
+                repo.close()
 
-        return lines
+    @staticmethod
+    def scan_marker_positions(repo_path: str) -> list[tuple[str, int, str]]:
+        """Возвращает позиции маркеров TODO/FIXME/FIX через `git grep`.
+
+        Каждый элемент — кортеж `(path, line_no, marker)`, где `marker`
+        равен `TODO`, `FIXME` или `FIX`. Работает по уже существующему
+        локальному клону, без сети.
+        """
+
+        results: list[tuple[str, int, str]] = []
+        for raw_line in SourceCraftGitClient.scan_markers(repo_path):
+            # Формат `git grep -n`: `<путь>:<номер>:<содержимое>`.
+            parts = raw_line.split(":", 2)
+            if len(parts) < 3:
+                continue
+            path, line_no_raw, content = parts
+            try:
+                line_no = int(line_no_raw)
+            except ValueError:
+                continue
+            match = SourceCraftGitClient._MARKER_RE.search(content)
+            if match is None:
+                continue
+            results.append((path, line_no, match.group(0)))
+        return results
+
+    def get_marker_commit_dates(
+        self,
+        scan_id: int,
+        branch: str,
+    ) -> dict[tuple[str, int], tuple[str, datetime]]:
+        """Сопоставляет позиции маркеров TODO/FIXME/FIX с их давностью.
+
+        Для каждого маркера в клоне скана возвращает ключ
+        `(path, line_no)` со значением `(marker, committed_datetime)`,
+        где дата берётся через `git blame`
+        Работает по уже существующему локальному клону, без сети.
+        """
+
+        repo_path = get_scan_repo_dir(scan_id)
+        positions = SourceCraftGitClient.scan_marker_positions(str(repo_path))
+        if not positions:
+            return {}
+
+        line_specs: dict[str, list[int]] = {}
+        marker_by_pos: dict[tuple[str, int], str] = {}
+        for path, line_no, marker in positions:
+            line_specs.setdefault(path, []).append(line_no)
+            marker_by_pos[(path, line_no)] = marker
+
+        dates_by_file = self.get_line_commit_dates(scan_id, branch, line_specs)
+
+        result: dict[tuple[str, int], tuple[str, datetime]] = {}
+        for (path, line_no), marker in marker_by_pos.items():
+            committed = dates_by_file.get(path, {}).get(line_no)
+            if committed is None:
+                continue
+            result[(path, line_no)] = (marker, committed)
+        return result
 
     def get_line_commit_dates(
         self,
-        org_slug: str,
-        repo_slug: str,
+        scan_id: int,
         branch: str,
         line_specs: dict[str, list[int]],
     ) -> dict[str, dict[int, datetime]]:
@@ -320,16 +389,8 @@ class SourceCraftGitClient:
         коммита, последним менявшего каждую строку (`git blame`).
 
         Используется health.code_health_scan для определения давности
-        TODO/FIXME по Git-истории: сначала находим строки-кандидаты по
-        содержимому файла (через SourceCraftFileClient), затем одним
-        клоном (а не по клону на файл) прогоняем blame по всем нужным
-        файлам сразу — так же, как get_commit_history, клонирует ОДИН
-        раз на вызов.
-
-        `--filter=tree:0` не мешает: git сам дотягивает недостающие
-        блобы по требованию (partial clone), пока origin доступен —
-        для blame по конкретным путям это несколько лёгких fetch'ей,
-        а не полный чек-аут.
+        TODO/FIXME по Git-истории. Работает по уже существующему
+        локальному клону, повторно НЕ клонирует.
 
         Файл, которого нет / который не удалось разобрать, просто
         отсутствует в результирующем словаре — вызывающий код трактует
@@ -337,64 +398,39 @@ class SourceCraftGitClient:
         всего вызова.
         """
 
-        if not org_slug or not repo_slug:
-            raise SourceCraftError("Для blame нужны org_slug и repo_slug")
-        if not self.token:
-            raise SourceCraftError("Нет токена для git-доступа к SourceCraft")
         if not line_specs:
             return {}
 
-        url = self._build_clone_url(org_slug, repo_slug)
-        env, askpass = _build_git_env(self.token, user="anyname")
-
+        repo_path = get_scan_repo_dir(scan_id)
+        repo = None
         result: dict[str, dict[int, datetime]] = {}
 
         try:
-            with self.semaphore.lease():
-                with tempfile.TemporaryDirectory(prefix="sc-git-") as tmp:
-                    clone_kwargs: dict[str, object] = dict(
-                        bare=True,
-                        single_branch=True,
-                        multi_options=["--filter=tree:0"],
-                        kill_after_timeout=self.clone_timeout_seconds,
-                        branch=branch,
-                        env=env,
+            repo = Repo(repo_path)
+            for path, lines in line_specs.items():
+                if not lines:
+                    continue
+                try:
+                    dates_by_line = self._blame_lines(repo, branch, path, lines)
+                except GitCommandError as exc:
+                    logger.warning(
+                        f"git blame не удался для "
+                        f"{repo_path}:{path}: {exc}"
                     )
-                    try:
-                        repo = Repo.clone_from(url, Path(tmp), **clone_kwargs)
-                    except GitCommandError as exc:
-                        stderr = (exc.stderr or "").strip()
-                        logger.warning(
-                            f"git clone (blame) не удался для "
-                            f"{org_slug}/{repo_slug}: {stderr}"
-                        )
-                        raise SourceCraftError(
-                            f"git clone {org_slug}/{repo_slug} завершился ошибкой",
-                            payload=stderr[:500],
-                        ) from exc
-
-                    try:
-                        for path, lines in line_specs.items():
-                            if not lines:
-                                continue
-                            try:
-                                dates_by_line = self._blame_lines(repo, branch, path, lines)
-                            except GitCommandError as exc:
-                                logger.warning(
-                                    f"git blame не удался для "
-                                    f"{org_slug}/{repo_slug}:{path}: {exc}"
-                                )
-                                continue
-                            if dates_by_line:
-                                result[path] = dates_by_line
-                    finally:
-                        repo.close()
-
-            return result
+                    continue
+                if dates_by_line:
+                    result[path] = dates_by_line
+        except SourceCraftError:
+            raise
+        except Exception as exc:
+            raise SourceCraftError(
+                f"Не удалось открыть репозиторий по пути {repo_path}: {exc}"
+            ) from exc
         finally:
-            askpass.unlink(missing_ok=True)
+            if repo is not None:
+                repo.close()
 
-    _BLAME_AUTHOR_TIME_RE = re.compile(r"^author-time (\d+)$")
+        return result
 
     @staticmethod
     def _blame_lines(
@@ -422,23 +458,30 @@ class SourceCraftGitClient:
         )
 
         dates: dict[int, datetime] = {}
+        time_by_sha: dict[str, int] = {}
         current_line: int | None = None
-        current_time: int | None = None
+        current_sha: str | None = None
         for raw_line in output.splitlines():
             header = raw_line.split(" ")
             if len(header) >= 3 and len(header[0]) == 40:
                 # "<sha> <orig_line> <final_line> [<num_lines>]"
+                current_sha = header[0]
                 try:
                     current_line = int(header[2])
                 except ValueError:
                     current_line = None
-                current_time = None
+                cached = time_by_sha.get(current_sha)
+                if cached is not None and current_line is not None and current_line in wanted:
+                    dates[current_line] = datetime.fromtimestamp(
+                        cached, tz=timezone.utc
+                    )
                 continue
             match = SourceCraftGitClient._BLAME_AUTHOR_TIME_RE.match(raw_line)
-            if match and current_line is not None:
-                current_time = int(match.group(1))
-                if current_line in wanted:
+            if match and current_sha is not None:
+                committed_time = int(match.group(1))
+                time_by_sha[current_sha] = committed_time
+                if current_line is not None and current_line in wanted:
                     dates[current_line] = datetime.fromtimestamp(
-                        current_time, tz=timezone.utc
+                        committed_time, tz=timezone.utc
                     )
         return dates

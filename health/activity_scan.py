@@ -126,6 +126,7 @@ def _count_recent(
 def _compute_commit_metrics(
     git_client: SourceCraftGitClient,
     repository: Repository,
+    scan_id: int,
 ) -> tuple[int | None, float | None, str, list[datetime]]:
     """Возвращает (commits_30d, commit_frequency_week, error, commit_dates).
 
@@ -133,11 +134,7 @@ def _compute_commit_metrics(
     """
 
     try:
-        commit_dates = git_client.get_commit_history(
-            org_slug=repository.org_slug,
-            repo_slug=repository.repo_slug,
-            branch=repository.default_branch,
-        )
+        commit_dates = git_client.get_commit_history(scan_id)
     except SourceCraftError as exc:
         logger.warning(
             f"Не удалось получить историю коммитов для {repository}: {exc}"
@@ -155,6 +152,7 @@ def _compute_metrics(
     repository: Repository,
     now: datetime,
     include_commits: bool,
+    scan_id: int,
 ) -> _ActivityMetrics:
     """Собирает сырые метрики Activity; API- и (опционально) git-клиенты
     вызываются здесь.
@@ -226,7 +224,7 @@ def _compute_metrics(
 
     if include_commits:
         commits_30d, commit_frequency_week, commits_error, commit_dates = (
-            _compute_commit_metrics(git_client, repository)
+            _compute_commit_metrics(git_client, repository, scan_id)
         )
         metrics.commits_30d = commits_30d
         metrics.commit_frequency_week = commit_frequency_week
@@ -459,6 +457,7 @@ def run_activity_scan(
         repository=repository,
         now=now,
         include_commits=include_commits,
+        scan_id=scan.id
     )
 
     score, data_completeness, submetric_scores = score_activity_category(
@@ -507,10 +506,13 @@ def run(scan_id: int) -> int:
     # commits считаются через git clone.
     include_commits = scan.triggered_by == Scan.TriggeredBy.USER
 
-    client = SourceCraftClient()
-    git_client = None
-    if include_commits and scan.triggered_by_user_id:
+    token = None
+    if scan.triggered_by_user_id:
         token = scan.triggered_by_user.profile.sourcecraft_token
+
+    client = SourceCraftClient(token=token)
+    git_client = None
+    if include_commits and token:
         git_client = SourceCraftGitClient(token=token)
 
     health_score = run_activity_scan(scan, client, git_client, include_commits)

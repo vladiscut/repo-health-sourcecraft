@@ -31,6 +31,7 @@ import redis
 
 from django.conf import settings
 
+from health.models import Repository
 from integrations.sourcecraft import SourceCraftClient, SourceCraftError
 
 
@@ -53,7 +54,7 @@ DEFAULT_REDIS_POOL_SIZE = 16
 @lru_cache(maxsize=1)
 def _get_redis() -> "redis.Redis":
     return redis.Redis.from_url(
-        settings.CELERY_RESULT_BACKEND,
+        settings.REDIS_TREE_CACHE_URL,
         max_connections=DEFAULT_REDIS_POOL_SIZE,
     )
 
@@ -68,7 +69,7 @@ def _lock_key(repo_id: str, revision: str | None) -> str:
 
 def get_repository_tree_cached(
     client: SourceCraftClient,
-    repository: Any,
+    repository: Repository,
 ) -> list[dict[str, Any]]:
     """Возвращает дерево файлов репозитория, используя общий Redis-кэш.
 
@@ -79,7 +80,7 @@ def get_repository_tree_cached(
     вызывающий код (docs_scan/code_health_scan) сам решает, как
     трактовать отсутствие данных, как и раньше.
     """
-
+    print('============== get_repository_tree_cached')
     redis_client = _get_redis()
     revision = repository.default_branch or None
     key = _cache_key(repository.sourcecraft_id, revision)
@@ -90,7 +91,9 @@ def get_repository_tree_cached(
 
     lock_key = _lock_key(repository.sourcecraft_id, revision)
     got_lock = bool(
-        redis_client.set(lock_key, "1", nx=True, ex=TREE_CACHE_LOCK_TTL_SECONDS)
+        redis_client.set(
+            lock_key, "1", nx=True, ex=TREE_CACHE_LOCK_TTL_SECONDS
+        )
     )
 
     if not got_lock:
@@ -108,7 +111,9 @@ def get_repository_tree_cached(
         )
 
     try:
-        tree = client.get_repository_file_tree(repository.sourcecraft_id, revision)
+        tree = client.get_repository_file_tree(
+            repository.sourcecraft_id, revision
+        )
     except SourceCraftError:
         if got_lock:
             redis_client.delete(lock_key)
@@ -121,3 +126,15 @@ def get_repository_tree_cached(
             redis_client.delete(lock_key)
 
     return tree
+
+
+def clear_repository_tree_cache(repository: Any) -> None:
+    """Удаляет запись кэша дерева для репозитория.
+
+    Вызывается явной clear-задачей сразу после последнего потребителя
+    дерева в цепочке скана, чтобы не держать устаревшее дерево весь TTL.
+    """
+
+    redis_client = _get_redis()
+    revision = repository.default_branch or None
+    redis_client.delete(_cache_key(repository.sourcecraft_id, revision))

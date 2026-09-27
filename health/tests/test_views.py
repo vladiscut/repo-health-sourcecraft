@@ -117,7 +117,7 @@ class RepoDetailAndExportTests(TestCase):
 
         self.assertRedirects(response, url)
         apply_async.assert_called_once_with(
-            args=[self.public.id, True],
+            args=[self.public.id, None, True],
             queue="analysis.scheduled",
         )
 
@@ -153,7 +153,7 @@ class RepoDetailAndExportTests(TestCase):
 
         self.assertRedirects(response, url)
         apply_async.assert_called_once_with(
-            args=[self.private.id, True],
+            args=[self.private.id, None, True],
             queue="analysis.scheduled",
         )
 

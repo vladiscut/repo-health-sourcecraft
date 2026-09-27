@@ -8,6 +8,8 @@
 """
 import datetime
 import logging
+import shutil
+from pathlib import Path
 
 from celery import group, chain
 
@@ -28,6 +30,7 @@ from health.tasks import (
     task_code_health_scan,
     task_check_and_scan_repository,
     task_git_clone,
+    task_clear_repo_tree,
 )
 from integrations.sourcecraft import SourceCraftClient, SourceCraftError
 
@@ -308,8 +311,8 @@ def start_repository_scan(
     # Публичные категории
     category_tasks.extend([
         task_docs_scan.si(scan.id).set(queue=queue),
-        task_activity_scan.si(scan.id).set(queue=queue),
         task_code_health_scan.si(scan.id).set(queue=queue),
+        task_activity_scan.si(scan.id).set(queue=queue),
     ])
 
     if repository.issues > 0:
@@ -338,6 +341,7 @@ def start_repository_scan(
                 "публичный запуск — категория не сканировалась",
             )
 
+    category_tasks.append(task_clear_repo_tree.si(scan.id).set(queue=queue))
     category_tasks.append(task_aggregate_scan.s(scan.id).set(queue=queue))
     chain(*category_tasks).set(queue=queue).apply_async()
 
@@ -412,9 +416,7 @@ def aggregate_scan(scan_id: int) -> dict:
     Repository.objects.filter(pk=scan.repository_id).update(
         **repo_update_fields
     )
-    
-    print('================ agr')
-    print(datetime.datetime.now())
+
     return {
         "scan_id": scan.id,
         "status": scan.status,
@@ -478,3 +480,35 @@ def fix_stale_scans() -> None:
     )
     if reaped:
         logger.warning(f"Переведено в FAILED зависших Scan: {reaped} шт.")
+    reap_orphan_clone_dirs()
+
+
+def reap_orphan_clone_dirs() -> int:
+    """Удаляет каталоги клонов, которым больше не соответствует Scan"""
+
+    clone_root = Path(settings.SCAN_REPO_DIR)
+    if not clone_root.is_dir():
+        return 0
+
+    terminal = (Scan.Status.SUCCESS, Scan.Status.FAILED, Scan.Status.PARTIAL)
+    removed = 0
+    for entry in clone_root.iterdir():
+        if not entry.is_dir() or not entry.name.isdigit():
+            continue
+
+        scan = Scan.objects.filter(pk=int(entry.name)).only("status").first()
+        if scan is not None and scan.status not in terminal:
+            # Скан ещё жив — каталог клона нужен, не трогаем.
+            continue
+
+        try:
+            shutil.rmtree(entry, ignore_errors=True)
+            removed += 1
+        except OSError as exc:  # pragma: no cover - defensive
+            logger.warning(
+                f"Не удалось удалить каталог клона {entry}: {exc}"
+            )
+
+    if removed:
+        logger.info(f"Удалено осиротевших каталогов клонов: {removed} шт.")
+    return removed
