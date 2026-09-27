@@ -5,7 +5,7 @@ Scan.status итогового скана и не пересчитывает о�
 
 Он отвечает за:
 
-1. Получение merge requests, contributors и releases через SourceCraftClient.
+1. Получение merge requests и releases через SourceCraftClient.
 2. Получение истории коммитов дефолтной ветки за ACTIVITY_LOOKBACK_DAYS
    через SourceCraftGitClient (git clone --shallow-since) и расчёт
    количества/частоты коммитов.
@@ -23,7 +23,7 @@ Scan.status итогового скана и не пересчитывает о�
   (см. core/celery.py) с воркером на prefork-пуле, потому что git clone —
   блокирующая subprocess-операция, которая на gevent-пуле держит greenlet
   и не даёт освободить слот другим задачам этого воркера. Из-за этого
-  MR/contributors/releases для Activity тоже выполняются на этом воркере,
+  MR/releases для Activity тоже выполняются на этом воркере,
   а не на быстром gevent-пуле analysis.scheduled — это сознательный
   компромисс ради изоляции git-операций, а не побочный эффект.
 - собственная арифметика score находится в health.scoring.
@@ -76,8 +76,6 @@ class _ActivityMetrics:
     last_activity_age_days: float | None = None
     last_activity_source: str = ""
 
-    contributors_count: int | None = None
-
     merge_requests_total: int | None = None
     merge_requests_30d: int | None = None
 
@@ -126,6 +124,7 @@ def _count_recent(
 def _compute_commit_metrics(
     git_client: SourceCraftGitClient,
     repository: Repository,
+    scan_id: int,
 ) -> tuple[int | None, float | None, str, list[datetime]]:
     """Возвращает (commits_30d, commit_frequency_week, error, commit_dates).
 
@@ -133,11 +132,7 @@ def _compute_commit_metrics(
     """
 
     try:
-        commit_dates = git_client.get_commit_history(
-            org_slug=repository.org_slug,
-            repo_slug=repository.repo_slug,
-            branch=repository.default_branch,
-        )
+        commit_dates = git_client.get_commit_history(scan_id)
     except SourceCraftError as exc:
         logger.warning(
             f"Не удалось получить историю коммитов для {repository}: {exc}"
@@ -155,6 +150,7 @@ def _compute_metrics(
     repository: Repository,
     now: datetime,
     include_commits: bool,
+    scan_id: int,
 ) -> _ActivityMetrics:
     """Собирает сырые метрики Activity; API- и (опционально) git-клиенты
     вызываются здесь.
@@ -182,13 +178,6 @@ def _compute_metrics(
         metrics.fetch_errors["merge_requests"] = str(exc)
 
     try:
-        contributors = client.get_contributors(repo_id)
-    except SourceCraftError as exc:
-        logger.warning(f"Не удалось получить contributors для {repository}: {exc}")
-        contributors = None
-        metrics.fetch_errors["contributors"] = str(exc)
-
-    try:
         releases = client.get_releases(repo_id)
     except SourceCraftError as exc:
         logger.warning(f"Не удалось получить releases для {repository}: {exc}")
@@ -208,9 +197,6 @@ def _compute_metrics(
         if mr_last_activity is not None:
             last_activity_candidates.append(("merge_requests", mr_last_activity))
 
-    if contributors is not None:
-        metrics.contributors_count = len(contributors)
-
     if releases is not None:
         metrics.releases_total = len(releases)
         metrics.releases_30d = _count_recent(
@@ -226,7 +212,7 @@ def _compute_metrics(
 
     if include_commits:
         commits_30d, commit_frequency_week, commits_error, commit_dates = (
-            _compute_commit_metrics(git_client, repository)
+            _compute_commit_metrics(git_client, repository, scan_id)
         )
         metrics.commits_30d = commits_30d
         metrics.commit_frequency_week = commit_frequency_week
@@ -299,12 +285,6 @@ def _save_metric_samples(scan: Scan, metrics: _ActivityMetrics) -> None:
         scan, "activity_last_activity_source", metrics.last_activity_source, "source",
         is_available=metrics.last_activity_at is not None,
         error_reason="" if metrics.last_activity_at is not None else "источник последней активности недоступен",
-    )
-
-    _save_metric_sample(
-        scan, "activity_contributors_count", metrics.contributors_count, "contributors",
-        is_available=metrics.contributors_count is not None,
-        error_reason="" if metrics.contributors_count is not None else metrics.fetch_errors.get("contributors", "contributors недоступны"),
     )
 
     _save_metric_sample(
@@ -394,17 +374,6 @@ def _build_findings(
             estimated_score_impact=4,
         ))
 
-    if metrics.contributors_count is not None and metrics.contributors_count <= 1:
-        findings.append(Finding(
-            scan=scan, category=CATEGORY,
-            severity=_bump(Finding.Severity.LOW, category_score),
-            title="Очень узкая база contributors",
-            detail=f"В SourceCraft найдено {metrics.contributors_count} contributor.",
-            recommendation="Зафиксируйте процесс участия и при необходимости расширьте круг contributors, чтобы снизить зависимость от одного владельца.",
-            evidence_refs=["contributors"],
-            estimated_score_impact=2,
-        ))
-
     if metrics.releases_total is not None and metrics.releases_total > 0 and metrics.releases_30d == 0:
         findings.append(Finding(
             scan=scan, category=CATEGORY,
@@ -433,7 +402,7 @@ def _build_findings(
             severity=Finding.Severity.LOW,
             title="Недостаточно данных для оценки категории Activity",
             detail="Не удалось получить ни одной метрики, которая участвует в расчёте Activity score.",
-            recommendation="Проверьте доступность SourceCraft API и git-протокола, а также формат данных merge requests, contributors, releases.",
+            recommendation="Проверьте доступность SourceCraft API и git-протокола, а также формат данных merge requests, releases.",
             evidence_refs=[],
             estimated_score_impact=0,
         ))
@@ -459,6 +428,7 @@ def run_activity_scan(
         repository=repository,
         now=now,
         include_commits=include_commits,
+        scan_id=scan.id
     )
 
     score, data_completeness, submetric_scores = score_activity_category(
@@ -483,7 +453,6 @@ def run_activity_scan(
                     "last_activity_at": metrics.last_activity_at.isoformat() if metrics.last_activity_at is not None else None,
                     "last_activity_age_days": metrics.last_activity_age_days,
                     "last_activity_source": metrics.last_activity_source,
-                    "contributors_count": metrics.contributors_count,
                     "merge_requests_total": metrics.merge_requests_total,
                     "merge_requests_30d": metrics.merge_requests_30d,
                     "releases_total": metrics.releases_total,
@@ -507,10 +476,13 @@ def run(scan_id: int) -> int:
     # commits считаются через git clone.
     include_commits = scan.triggered_by == Scan.TriggeredBy.USER
 
-    client = SourceCraftClient()
-    git_client = None
-    if include_commits and scan.triggered_by_user_id:
+    token = None
+    if scan.triggered_by_user_id:
         token = scan.triggered_by_user.profile.sourcecraft_token
+
+    client = SourceCraftClient(token=token)
+    git_client = None
+    if include_commits and token:
         git_client = SourceCraftGitClient(token=token)
 
     health_score = run_activity_scan(scan, client, git_client, include_commits)

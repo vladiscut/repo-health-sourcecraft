@@ -190,16 +190,45 @@ def task_reap_stale_scans() -> None:
 
 
 @shared_task
+def task_reap_orphan_clone_dirs() -> int:
+    """Удаляет каталоги клонов, для которых в БД больше нет Scan."""
+
+    from health.orchestrator import reap_orphan_clone_dirs
+    return reap_orphan_clone_dirs()
+
+
+@shared_task
 def task_check_and_scan_repository(
     repository_id: int,
     user_id: int = None,
     force: bool = False,
 ) -> None:
     """Проверка хеша + запуск скана при необходимости для олного репозитория"""
+
     from health.orchestrator import check_and_scan_repository
     check_and_scan_repository(repository_id, force, user_id)
+
+
+@shared_task(bind=True, max_retries=2, default_retry_delay=15)
+def task_git_clone(self, scan_id: int) -> list[int]:
+    """Клонирование репо"""
+
+    from health.git_clone import run
+    run(scan_id)
+
+
+@shared_task
+def task_clear_repo_tree(scan_id: int) -> None:
+    """Удаляет запись кэша дерева для скана после последнего потребителя"""
+
+    from health.models import Scan
+    from health.tree_cache import clear_repository_tree_cache
+
+    scan = Scan.objects.select_related("repository").filter(pk=scan_id).first()
+    if scan:
+        clear_repository_tree_cache(scan.repository)
+
 
 def task_scan_user_repository(obj1, obj2):
     # TODO delete
     pass
-

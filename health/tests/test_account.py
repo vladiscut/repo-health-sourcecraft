@@ -75,7 +75,7 @@ class MyReposTests(TestCase):
         self.user.profile.refresh_from_db()
         self.assertFalse(self.user.profile.sourcecraft_pat)
         self.assertFalse(self.user.repository_access.exists())
-    @patch("health.account.task_scan_user_repository.delay")
+    @patch("health.account.task_scan_user_repository")
     def test_analyze_creates_pending_scan(self, delay):
         response = self.client.post(
             reverse("health:analyze-my-repo", args=["ivan", "app"]),
@@ -85,9 +85,9 @@ class MyReposTests(TestCase):
         scan = Scan.objects.get()
         self.assertEqual(scan.status, Scan.Status.PENDING)
         self.assertEqual(scan.triggered_by, Scan.TriggeredBy.USER)
-        delay.assert_called_once_with(self.repo.id)
+        delay.delay.assert_called_once_with(self.repo.id)
 
-    @patch("health.account.task_scan_user_repository.delay")
+    @patch("health.account.task_scan_user_repository")
     def test_analyze_while_scan_is_active_shows_message(self, delay):
         url = reverse("health:analyze-my-repo", args=["ivan", "app"])
         self.client.post(url, {"next": reverse("health:my-repos")})
@@ -95,9 +95,9 @@ class MyReposTests(TestCase):
 
         self.assertRedirects(response, reverse("health:my-repos"))
         self.assertEqual(Scan.objects.count(), 1)
-        delay.assert_called_once_with(self.repo.id)
+        delay.delay.assert_called_once_with(self.repo.id)
 
-    @patch("health.account.task_scan_user_repository.delay")
+    @patch("health.account.task_scan_user_repository")
     def test_analyze_rejects_open_redirect(self, delay):
         response = self.client.post(
             reverse("health:analyze-my-repo", args=["ivan", "app"]),
@@ -107,7 +107,7 @@ class MyReposTests(TestCase):
             response,
             reverse("health:repo-detail", args=["ivan", "app"]),
         )
-        delay.assert_called_once()
+        delay.delay.assert_called_once()
 
     def test_analyze_foreign_repo_is_404(self):
         make_repo(org_slug="other", repo_slug="nope", sourcecraft_id="nope-1")
@@ -117,7 +117,7 @@ class MyReposTests(TestCase):
         self.assertEqual(response.status_code, 404)
         self.assertFalse(Scan.objects.exists())
 
-    @patch("health.account.task_scan_user_repository.delay")
+    @patch("health.account.task_scan_user_repository")
     @patch("health.user_repository.SourceCraftClient")
     def test_analyze_private_repo_requires_live_api_access(self, client_cls, delay):
         private = make_repo(
@@ -140,5 +140,5 @@ class MyReposTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertFalse(Scan.objects.exists())
-        delay.assert_not_called()
+        delay.delay.assert_not_called()
 

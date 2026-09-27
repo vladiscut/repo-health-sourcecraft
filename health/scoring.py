@@ -319,16 +319,14 @@ ACTIVITY_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD = 40
 # на запуск), поэтому commits учитываются.
 ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS = {
     "recent_activity": 0.40,
-    "contributors": 0.05,
     "merge_requests": 0.30,
-    "releases": 0.25,
+    "releases": 0.30,
 }
 
 ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS = {
-    "recent_activity": 0.33,
+    "recent_activity": 0.35,
     "commits": 0.20,
-    "contributors": 0.05,
-    "merge_requests": 0.22,
+    "merge_requests": 0.25,
     "releases": 0.20,
 }
 
@@ -342,10 +340,6 @@ ACTIVITY_RECENT_ACTIVITY_MID_DAYS = 30
 ACTIVITY_RECENT_ACTIVITY_STALE_DAYS = 90
 
 ACTIVITY_LOOKBACK_DAYS = 30
-
-# Contributors: 0 -> 0; 1 -> 30; 10+ -> 100.
-ACTIVITY_SINGLE_CONTRIBUTOR_SCORE = 30
-ACTIVITY_CONTRIBUTORS_FOR_FULL_SCORE = 10
 
 # Merge requests за ACTIVITY_LOOKBACK_DAYS: 0 -> 0; 10+ -> 100.
 ACTIVITY_MERGE_REQUESTS_FOR_FULL_SCORE = 10
@@ -402,7 +396,6 @@ def score_activity_category(
     ``metrics`` — объект с атрибутами:
 
     - ``last_activity_age_days``
-    - ``contributors_count``
     - ``merge_requests_30d``
     - ``releases_30d``
     - ``commits_30d`` — используется, только если ``include_commits=True``
@@ -437,14 +430,6 @@ def score_activity_category(
         if commits_score is not None:
             submetric_scores["commits"] = commits_score
 
-    contributors_score = _score_activity_count(
-        metrics.contributors_count,
-        full_score_count=ACTIVITY_CONTRIBUTORS_FOR_FULL_SCORE,
-        score_at_one=ACTIVITY_SINGLE_CONTRIBUTOR_SCORE,
-    )
-    if contributors_score is not None:
-        submetric_scores["contributors"] = contributors_score
-
     merge_requests_score = _score_activity_count(
         metrics.merge_requests_30d,
         full_score_count=ACTIVITY_MERGE_REQUESTS_FOR_FULL_SCORE,
@@ -460,6 +445,163 @@ def score_activity_category(
         submetric_scores["releases"] = releases_score
 
     return (*weighted_submetric_score(submetric_scores, weights), submetric_scores)
+
+
+# --------------------------------------------------------------------
+# Code health: пороги, веса под-метрик и расчёт балла категории.
+# --------------------------------------------------------------------
+
+CODE_HEALTH_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD = 40
+
+# Сумма весов = 1.0, независимо от CATEGORY_WEIGHTS[CODE_HEALTH] (0.20).
+#
+# tests_present и no_committed_junk — самые тяжёлые: отсутствие тестов
+# и замусоренное дерево (вендоренные зависимости/сборки в git) — самые
+# прямые признаки проблем с поддерживаемостью. todo_debt — самый
+# лёгкий: сам факт наличия TODO — это норма, штрафуем только за объём
+# и застарелость.
+CODE_HEALTH_SUBMETRIC_WEIGHTS = {
+    "tests_present": 0.25,
+    "no_committed_junk": 0.20,
+    "structure": 0.15,
+    "lint_config_present": 0.15,
+    "dependency_hygiene": 0.10,
+    "todo_debt": 0.15,
+}
+
+# todo_debt: количество TODO/FIXME, при котором балл падает до 0 (сам
+# факт большого объёма долга), и порог "старых" (давность в днях),
+# при превышении доли которых добавляется отдельный штраф.
+CODE_HEALTH_TODO_COUNT_FOR_ZERO_SCORE = 40
+CODE_HEALTH_TODO_OLD_AGE_DAYS = 180  # полгода — см. пример ТЗ ("старше шести месяцев")
+CODE_HEALTH_TODO_OLD_RATIO_FOR_MAX_PENALTY = 0.5  # 50%+ старых -> полный доп. штраф
+CODE_HEALTH_TODO_OLD_RATIO_PENALTY_POINTS = 30.0
+
+
+def _score_no_committed_junk(metrics) -> float | None:
+    """100, если в дереве нет закоммиченных зависимостей/сборок/бинарного
+    мусора; каждая обнаруженная категория мусора вычитает штраф.
+
+    None, если ни одного из трёх признаков не удалось определить (дерево
+    не получено вообще) — тогда submetric попросту не участвует.
+    """
+
+    flags = [
+        metrics.vendored_deps_present,
+        metrics.generated_artifacts_present,
+        metrics.binary_junk_present,
+    ]
+    known = [f for f in flags if f is not None]
+    if not known:
+        return None
+    penalty_per_flag = 100.0 / len(known)
+    return max(0.0, 100.0 - penalty_per_flag * sum(1 for f in known if f))
+
+
+def _score_structure(metrics) -> float | None:
+    """Оценивает "не свалка ли это" и "не data-only ли это".
+
+    data-only репозиторий — это не код, поэтому по определению плохой
+    сигнал для категории Code health (см. ТЗ: "репозиторий, который
+    состоит только из CSV/JSON и не является кодом").
+    """
+
+    if metrics.is_data_only_repo is None and metrics.is_flat_dump is None:
+        return None
+    if metrics.is_data_only_repo:
+        return 0.0
+    if metrics.is_flat_dump:
+        return 20.0
+    return 100.0
+
+
+def _score_dependency_hygiene(metrics) -> float | None:
+    """Наличие манифеста зависимостей + lockfile.
+
+    Если в репозитории вообще нет исходного кода (data-only / пусто) —
+    submetric неприменим, а не "плохой": штрафовать за отсутствие
+    package.json репозиторий из одних CSV бессмысленно, это уже
+    отражено в submetric structure.
+    """
+
+    if not metrics.source_files_count:
+        return None
+    if metrics.dependency_manifest_present and metrics.lockfile_present:
+        return 100.0
+    if metrics.dependency_manifest_present:
+        return 70.0
+    return 30.0
+
+
+def _score_todo_debt(metrics) -> float | None:
+    if metrics.todo_total_count is None:
+        return None
+    if metrics.todo_total_count == 0:
+        return 100.0
+
+    count_score = scale(
+        metrics.todo_total_count,
+        worst=CODE_HEALTH_TODO_COUNT_FOR_ZERO_SCORE,
+        best=0.0,
+    )
+
+    if metrics.todo_age_available and metrics.todo_old_count is not None:
+        old_ratio = metrics.todo_old_count / metrics.todo_total_count
+        penalty = scale(
+            old_ratio,
+            worst=CODE_HEALTH_TODO_OLD_RATIO_FOR_MAX_PENALTY,
+            best=0.0,
+        )
+        # `scale` возвращает 0..100 "чем лучше, тем больше" — здесь
+        # нужен ШТРАФ, поэтому берём (100 - penalty) как долю
+        # применяемого максимального штрафа.
+        penalty_points = (100.0 - penalty) / 100.0 * CODE_HEALTH_TODO_OLD_RATIO_PENALTY_POINTS
+        count_score = max(0.0, count_score - penalty_points)
+
+    return count_score
+
+
+def score_code_health_category(metrics) -> tuple[int | None, float, dict[str, float]]:
+    """Считает балл категории Code health по уже собранным сырым метрикам.
+
+    ``metrics`` — объект вида health.code_health_scan._CodeHealthMetrics.
+    Чистая функция без обращений к БД/API, как и остальные score_*
+    в этом модуле.
+    """
+
+    submetric_scores: dict[str, float] = {}
+
+    if metrics.tests_present is not None:
+        submetric_scores["tests_present"] = 100.0 if metrics.tests_present else 0.0
+
+    if metrics.lint_config_present is not None:
+        submetric_scores["lint_config_present"] = (
+            100.0 if metrics.lint_config_present else 0.0
+        )
+
+    junk_score = _score_no_committed_junk(metrics)
+    if junk_score is not None:
+        submetric_scores["no_committed_junk"] = junk_score
+
+    structure_score = _score_structure(metrics)
+    if structure_score is not None:
+        submetric_scores["structure"] = structure_score
+
+    dependency_score = _score_dependency_hygiene(metrics)
+    if dependency_score is not None:
+        submetric_scores["dependency_hygiene"] = dependency_score
+
+    todo_score = _score_todo_debt(metrics)
+    if todo_score is not None:
+        submetric_scores["todo_debt"] = todo_score
+
+    if not submetric_scores:
+        return None, 0.0, submetric_scores
+
+    score, data_completeness = weighted_submetric_score(
+        submetric_scores, CODE_HEALTH_SUBMETRIC_WEIGHTS
+    )
+    return score, data_completeness, submetric_scores
 
 
 def overall_from_category_totals(totals: dict[str, int | None]) -> int | None:

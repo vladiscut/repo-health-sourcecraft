@@ -20,6 +20,7 @@ from django.db import transaction
 from core.utils import parse_datetime
 from health.models import Finding, HealthScore, MetricSample, Profile, Scan
 from health.scoring import CATEGORY_WEIGHTS, scale, weighted_submetric_score
+from health.tree_cache import get_repository_tree_cached
 from integrations.sourcecraft import SourceCraftClient, SourceCraftError
 
 logger = logging.getLogger(__name__)
@@ -327,10 +328,7 @@ def _save_scored(
 def run_cicd_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
     repository = scan.repository
     try:
-        tree = client.get_repository_file_tree(
-            repository.sourcecraft_id,
-            repository.default_branch or None,
-        )
+        tree = get_repository_tree_cached(client, repository)
     except SourceCraftError as exc:
         logger.error(f"Не удалось получить дерево файлов {repository}: {exc}")
         return _save_unavailable(scan, str(exc))
