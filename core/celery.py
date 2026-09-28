@@ -55,6 +55,4 @@ app.conf.task_routes = {
     "health.tasks.task_reap_orphan_clone_dirs": {"queue": SCHEDULE_QUEUE_NAME},
     # проверка и запуск скана
     "health.tasks.task_check_and_scan_repository": {"queue": SCHEDULE_QUEUE_NAME},
-    # скан репозитория пользователя
-    "health.tasks.task_scan_user_repository": {"queue": USER_QUEUE_NAME},
 }

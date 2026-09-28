@@ -11,8 +11,9 @@ from django.urls import reverse
 from django.views import View
 from django.views.generic import TemplateView
 
+from core.celery import USER_QUEUE_NAME
 from health.models import Profile, Repository, Scan, UserRepositoryAccess
-from health.tasks import task_scan_user_repository
+from health.tasks import task_check_and_scan_repository
 from health.user_repository import (
     sourcecraft_token_works,
     sync_user_repositories,
@@ -251,9 +252,13 @@ class AnalyzeMyRepoView(LoginRequiredMixin, View):
         except IntegrityError:
             messages.info(request, "Анализ этого репозитория уже идёт.")
             return redirect(next_url)
-        task_scan_user_repository.delay(repo.id)
-        messages.info(
-            request,
-            "Анализ поставлен в очередь. Сбор метрик пока не подключён — это заготовка.",
+        task_check_and_scan_repository.apply_async(
+            kwargs={
+                "repository_id": repo.id,
+                "user_id": request.user.id,
+                "force": True,
+            },
+            queue=USER_QUEUE_NAME,
         )
+        messages.info(request, "Анализ поставлен в очередь.")
         return redirect(next_url)
