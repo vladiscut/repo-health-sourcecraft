@@ -3,21 +3,19 @@
 Читает уже сохранённый снимок HealthScore и не пересчитывает Score.
 """
 
-from health.cicd_scan import SUBMETRIC_WEIGHTS as CICD_SUBMETRIC_WEIGHTS
 from health.models import MetricSample
 from health.scoring import (
     ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS,
     ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS,
     CATEGORY_LABELS,
+    CICD_SUBMETRIC_WEIGHTS,
     DOCS_SUBMETRIC_WEIGHTS,
     ISSUES_SUBMETRIC_WEIGHTS,
+    SECURITY_DIRECT_CRITICAL_PENALTY,
+    SECURITY_HIGH_PENALTY,
+    SECURITY_TRANSITIVE_CRITICAL_PENALTY,
 )
-from health.security_scan import (
-    DIRECT_CRITICAL_PENALTY,
-    HIGH_PENALTY,
-    TRANSITIVE_CRITICAL_PENALTY,
-    plain_security_reason,
-)
+from health.security_scan import plain_security_reason
 
 
 SUBMETRIC_LABELS = {
@@ -157,16 +155,16 @@ def _security_parts(raw: dict) -> list[dict]:
     direct = critical_count - transitive
     parts = []
     if direct:
-        parts.append(_part("Прямые critical", detail=f"{direct} × −{DIRECT_CRITICAL_PENALTY}"))
+        parts.append(_part("Прямые critical", detail=f"{direct} × −{SECURITY_DIRECT_CRITICAL_PENALTY}"))
     if transitive:
         parts.append(
             _part(
                 "Транзитивные critical",
-                detail=f"{transitive} × −{TRANSITIVE_CRITICAL_PENALTY}",
+                detail=f"{transitive} × −{SECURITY_TRANSITIVE_CRITICAL_PENALTY}",
             )
         )
     if high_count:
-        parts.append(_part("High", detail=f"{high_count} × −{HIGH_PENALTY}"))
+        parts.append(_part("High", detail=f"{high_count} × −{SECURITY_HIGH_PENALTY}"))
     if not parts:
         return [_part("Открытых critical и high нет")]
     return parts
