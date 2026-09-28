@@ -135,9 +135,6 @@ def task_activity_scan(self, scan_id: int) -> int:
     except APIErr:
         raise
     except Exception as exc:
-        import traceback
-        error = traceback.format_exc()
-        print(error)
         return _fallback_health_score(
             scan_id, MetricSample.Category.ACTIVITY, str(exc)
         )

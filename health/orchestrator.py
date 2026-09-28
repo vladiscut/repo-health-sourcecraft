@@ -4,7 +4,7 @@ import logging
 import shutil
 from pathlib import Path
 
-from celery import group, chain
+from celery import group, chain, chord
 
 from django.conf import settings
 from django.db import IntegrityError
@@ -93,9 +93,6 @@ def _fallback_health_score(scan_id: int, category: str, reason: str) -> int:
             error_reason=reason[:255],
             source_reference="",
         ),
-    )
-    logger.warning(
-        f"Категория {category} недоступна для scan={scan_id}: {reason}"
     )
     return hs.id
 
@@ -313,17 +310,12 @@ def start_repository_scan(
         current_hash or last_commit or "",
     )
 
-    category_tasks = []
-    if user_id:
-        # Если скан запустил пользователь, то сперва получаем клон репозитория
-        category_tasks.append(task_git_clone.s(scan.id).set(queue=queue))
-
     # Публичные категории
-    category_tasks.extend([
+    category_tasks = [
         task_docs_scan.si(scan.id).set(queue=queue),
         task_code_health_scan.si(scan.id).set(queue=queue),
         task_activity_scan.si(scan.id).set(queue=queue),
-    ])
+    ]
 
     if repository.issues > 0:
         category_tasks.append(task_issues_scan.si(scan.id).set(queue=queue))
@@ -351,9 +343,19 @@ def start_repository_scan(
                 "публичный запуск — категория не сканировалась",
             )
 
-    category_tasks.append(task_clear_repo_tree.si(scan.id).set(queue=queue))
-    category_tasks.append(task_aggregate_scan.s(scan.id).set(queue=queue))
-    chain(*category_tasks).set(queue=queue).apply_async()
+    header = group(*category_tasks)
+    workflow_tasks = []
+
+    if user_id:
+        # Если скан запустил пользователь, то сперва получаем клон репозитория
+        workflow_tasks.append(task_git_clone.s(scan.id).set(queue=queue))
+
+    workflow_tasks.extend([
+        chord(header, task_aggregate_scan.si(scan.id).set(queue=queue)),
+        task_clear_repo_tree.si(scan.id).set(queue=queue)
+    ])
+
+    chain(*workflow_tasks).apply_async()
 
     return scan.id
 
@@ -472,6 +474,8 @@ def aggregate_scan(scan_id: int) -> dict:
 
 
 def scan_all_public_repositories():
+    BATCH_SIZE = 500
+
     active_repo_ids = Scan.objects.filter(
         status__in=[Scan.Status.PENDING, Scan.Status.RUNNING]
     ).values_list("repository_id", flat=True)
@@ -482,11 +486,26 @@ def scan_all_public_repositories():
         .order_by("is_empty", F("last_updated").desc(nulls_last=True))
     )
 
-    repo_ids = list(queryset.values_list("id", flat=True))
+    repo_ids = list(
+        queryset.values_list("id", flat=True)
+        .iterator(chunk_size=BATCH_SIZE)
+    )
+
+    batch: list[int] = []
+    for rid in repo_ids:
+        batch.append(rid)
+        if len(batch) >= BATCH_SIZE:
+            _dispatch_batch(batch)
+            batch = []
+
+    if batch:
+        _dispatch_batch(batch)
+
+
+def _dispatch_batch(ids: list[int]) -> None:
     group(
-        task_check_and_scan_repository.s(rid) for rid in repo_ids
+        task_check_and_scan_repository.si(rid) for rid in ids
     ).apply_async()
-    return {"dispatched": len(repo_ids)}
 
 
 def check_and_scan_repository(
