@@ -4,7 +4,25 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Repo Health{% endblock %}</title>
+    <meta name="description" content="Оценка здоровья открытых репозиториев SourceCraft.">
     {% load static %}
+    <link rel="icon" href="{% static 'health/favicon.svg' %}" type="image/svg+xml">
+    <link rel="icon" href="{% static 'health/favicon.png' %}" type="image/png" sizes="32x32">
+    <link rel="apple-touch-icon" href="{% static 'health/apple-touch-icon.png' %}">
+    {% if "127.0.0.1" in request.get_host or "localhost" in request.get_host %}
+    <meta property="og:url" content="http://{{ request.get_host }}{{ request.get_full_path }}">
+    <meta property="og:image" content="http://{{ request.get_host }}{% static 'health/og.png' %}">
+    {% else %}
+    <meta property="og:url" content="https://{{ request.get_host }}{{ request.get_full_path }}">
+    <meta property="og:image" content="https://{{ request.get_host }}{% static 'health/og.png' %}">
+    {% endif %}
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Repo Health">
+    <meta property="og:title" content="{% block og_title %}Repo Health{% endblock %}">
+    <meta property="og:description" content="{% block og_description %}Оценка здоровья открытых репозиториев SourceCraft.{% endblock %}">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta name="twitter:card" content="summary_large_image">
     <link rel="stylesheet" href="{% static 'health/app.css' %}">
 </head>
 <body>

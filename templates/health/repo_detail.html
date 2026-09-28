@@ -1,6 +1,8 @@
 {% extends "health/base.html" %}
 {% load static %}
 {% block title %}{{ repo.org_slug }}/{{ repo.repo_slug }} · Repo Health{% endblock %}
+{% block og_title %}{{ repo.org_slug }}/{{ repo.repo_slug }} · Repo Health{% endblock %}
+{% block og_description %}{% if repo.description %}{{ repo.description }}{% else %}Оценка здоровья репозитория {{ repo.org_slug }}/{{ repo.repo_slug }} на SourceCraft.{% endif %}{% endblock %}
 {% block content %}
 <p class="crumb"><a href="{{ back_url }}">← К списку</a></p>
 <div class="hero"
