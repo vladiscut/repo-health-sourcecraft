@@ -324,12 +324,12 @@ class MetricSample(models.Model):
     """Одна собранная метрика внутри категории для конкретного прогона анализа."""
 
     class Category(models.TextChoices):
-        DOCS = "docs", "документация и лучшие практики"
+        DOCS = "docs", "Документация"
         CI_CD = "ci_cd", "CI/CD"
-        SECURITY = "security", "security"
-        ACTIVITY = "activity", "активность проекта"
-        ISSUES = "issues", "issues"
-        CODE_HEALTH = "code_health", "состояние кода и технический долг"
+        SECURITY = "security", "Безопасность"
+        ACTIVITY = "activity", "Активность"
+        ISSUES = "issues", "Issues"
+        CODE_HEALTH = "code_health", "Состояние кода"
 
     scan = models.ForeignKey(
         Scan,
@@ -426,10 +426,10 @@ class HealthScore(models.Model):
 class Finding(models.Model):
 
     class Severity(models.TextChoices):
-        LOW = "1", "low"
-        MEDIUM = "2", "medium"
-        HIGH = "3", "high"
-        CRITICAL = "4", "critical"
+        LOW = "1", "низкая"
+        MEDIUM = "2", "средняя"
+        HIGH = "3", "высокая"
+        CRITICAL = "4", "критическая"
 
     scan = models.ForeignKey(
         Scan,

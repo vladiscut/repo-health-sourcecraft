@@ -45,7 +45,9 @@ from health.scoring import (
     ISSUES_LOOKBACK_DAYS,
     ISSUES_STALE_DAYS_THRESHOLD,
     ISSUES_TIME_TO_CLOSE_DAYS_FOR_ZERO_SCORE,
+    ISSUES_SUBMETRIC_WEIGHTS,
     bump_severity,
+    find_impact,
     score_issues_category,
 )
 from integrations.sourcecraft import SourceCraftClient, SourceCraftError
@@ -266,10 +268,19 @@ def _bump(severity: str, category_score: float | None) -> str:
     )
 
 
-def _build_findings(scan: Scan, metrics: _IssuesMetrics, category_score: float | None) -> None:
+def _build_findings(
+    scan: Scan,
+    metrics: _IssuesMetrics,
+    category_score: float | None,
+    submetric_scores: dict[str, float] | None = None,
+) -> None:
     Finding.objects.filter(scan=scan, category=CATEGORY).delete()
 
     findings: list[Finding] = []
+    scores = submetric_scores or {}
+
+    def impact(submetric_key: str) -> int:
+        return find_impact(submetric_key, ISSUES_SUBMETRIC_WEIGHTS, scores)
 
     if metrics.stale_ratio is not None and metrics.stale_count > 0:
         from health.scoring import ISSUES_STALE_RATIO_FOR_ZERO_SCORE
@@ -297,7 +308,7 @@ def _build_findings(scan: Scan, metrics: _IssuesMetrics, category_score: float |
                     "автоматическую пометку stale через bot/CI."
                 ),
                 evidence_refs=metrics.stale_issue_refs[:20],
-                estimated_score_impact=8 if severity == Finding.Severity.HIGH else 4,
+                estimated_score_impact=impact("stale_ratio"),
             )
         )
 
@@ -319,7 +330,7 @@ def _build_findings(scan: Scan, metrics: _IssuesMetrics, category_score: float |
                         "разбор или auto-label) и целевой SLA на первый ответ."
                     ),
                     evidence_refs=[f"issues:first-response-sample:{metrics.first_response_sample_size}"],
-                    estimated_score_impact=5,
+                    estimated_score_impact=impact("first_response"),
                 )
             )
 
@@ -333,7 +344,7 @@ def _build_findings(scan: Scan, metrics: _IssuesMetrics, category_score: float |
                 detail=f"Медианное время до закрытия issue — {metrics.median_time_to_close_days:.0f} дней.",
                 recommendation="Приоритизируйте разбор бэклога и разбивайте крупные задачи на более мелкие с понятным критерием закрытия.",
                 evidence_refs=["issues:time-to-close"],
-                estimated_score_impact=4,
+                estimated_score_impact=impact("time_to_close"),
             )
         )
 
@@ -417,7 +428,7 @@ def run_issues_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
 
     with transaction.atomic():
         _save_metric_samples(scan, metrics)
-        _build_findings(scan, metrics, score)
+        _build_findings(scan, metrics, score, submetric_scores)
 
         health_score, _ = HealthScore.objects.update_or_create(
             scan=scan,

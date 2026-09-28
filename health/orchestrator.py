@@ -19,8 +19,8 @@ from django.db.models import F
 from django.utils import timezone
 
 from core.celery import USER_QUEUE_NAME, SCHEDULE_QUEUE_NAME
-from health.models import HealthScore, MetricSample, Repository, Scan
-from health.scoring import CATEGORY_WEIGHTS
+from health.models import Finding, HealthScore, MetricSample, Repository, Scan
+from health.scoring import CATEGORY_WEIGHTS, overall_finding_impacts
 from health.tasks import (
     task_issues_scan,
     task_docs_scan,
@@ -197,8 +197,9 @@ def _create_empty_repo_scan(
 ) -> int:
     """Создаёт Scan для пустого репозитория без обращений к SourceCraft API.
 
-    По каждой из 6 категорий пишем HealthScore с `total=None` ("Нет
-    данных"), а сам Repo Health Score явно фиксируем как `0`
+    По каждой из 6 категорий и в итоге пишем пустой балл: в интерфейсе
+    это «Нет данных». Скан был, но ветки нет и измерить нечего.
+    Ноль сюда не пишем — ноль остаётся измеренным плохим баллом.
     """
 
     reaped = _mark_stale_scans_as_failed(
@@ -284,7 +285,7 @@ def _create_empty_repo_scan(
     scan.finished_at = timezone.now()
     scan.raw = {
         **scan.raw,
-        "health_score": 0,
+        "health_score": None,
         "category_scores": {c: "Нет данных" for c in ALL_CATEGORIES},
         "missing_categories": [],
         "empty_repository": True,
@@ -294,10 +295,10 @@ def _create_empty_repo_scan(
     Repository.objects.filter(pk=repository.pk).update(
         last_scanned_at=scan.finished_at,
         last_commit_sha_processed="",
-        health_score=0,
+        health_score=None,
     )
 
-    logger.info(f"Репозиторий {repository} пуст ({reason}) — Score = 0")
+    logger.info(f"Репозиторий {repository} пуст ({reason}) — итог «Нет данных»")
     return scan.id
 
 
@@ -314,7 +315,7 @@ def start_repository_scan(
 
     Особые случаи, не требующие полного скана:
     - Пустой репозиторий (`is_empty=True` либо нет `default_branch`):
-      категории сразу помечаются "Нет данных", Score = 0.
+      категории и итог сразу помечаются «Нет данных».
       Если репозиторий уже был отмечен пустым в прошлый раз и остаётся
       пустым — просто переиспользуем прошлый Scan
     - Категория Issues пропускается, если у репозитория `issues == 0`
@@ -426,6 +427,39 @@ def start_repository_scan(
     return scan.id
 
 
+def _scale_finding_impacts(scan: Scan, by_category: dict[str, HealthScore]) -> None:
+    """Пишет в находки прирост общего Score, а не баллы категории.
+
+    Сканеры сохраняют баллы категории (find_impact). Здесь они
+    умножаются на фактический вес категории. Исходные баллы лежат в
+    scan.raw, чтобы повторный запуск агрегации не умножал вес дважды.
+    """
+
+    findings = list(Finding.objects.filter(scan=scan))
+    if not findings:
+        return
+
+    raw = scan.raw or {}
+    saved = dict(raw.get("finding_category_points") or {})
+    pairs: list[tuple[str, int]] = []
+    for finding in findings:
+        key = str(finding.id)
+        if key not in saved:
+            saved[key] = finding.estimated_score_impact
+        pairs.append((finding.category, int(saved[key])))
+
+    totals = {category: score.total for category, score in by_category.items()}
+    weights = {
+        category: score.weight_used for category, score in by_category.items()
+    }
+    impacts = overall_finding_impacts(pairs, totals, weights)
+    for finding, impact in zip(findings, impacts):
+        finding.estimated_score_impact = impact
+    Finding.objects.bulk_update(findings, ["estimated_score_impact"])
+
+    scan.raw = {**raw, "finding_category_points": saved}
+
+
 def aggregate_scan(scan_id: int) -> dict:
     """
     Считает Repo Health Score по категориям, где данные есть.
@@ -471,6 +505,8 @@ def aggregate_scan(scan_id: int) -> dict:
         hs.weight_used = 0.0
     if no_data_scores:
         HealthScore.objects.bulk_update(no_data_scores, ["weight_used"])
+
+    _scale_finding_impacts(scan, by_category)
 
     if missing_categories:
         # Часть категорий не отчиталась вообще — Scan считаем частичным

@@ -730,7 +730,7 @@ def _build_findings(
         findings.append(Finding(
             scan=scan, category=CATEGORY,
             severity=Finding.Severity.LOW,
-            title="Недостаточно данных для оценки категории Code health",
+            title="Недостаточно данных для оценки состояния кода",
             detail="Не удалось получить дерево файлов репозитория — ни одна метрика категории не рассчитана.",
             recommendation="Проверьте доступность SourceCraft API.",
             evidence_refs=[],
@@ -832,6 +832,7 @@ def run_code_health_scan(
                     "todo_total_count": metrics.todo_total_count,
                     "todo_old_count": metrics.todo_old_count,
                     "todo_age_available": metrics.todo_age_available,
+                    "include_todo_age": include_todo_age,
                     "todo_scan_files_count": metrics.todo_scan_files_count,
                     "fetch_errors": metrics.fetch_errors,
                     "submetric_scores": submetric_scores,

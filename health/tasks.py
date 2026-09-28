@@ -197,6 +197,28 @@ def task_reap_orphan_clone_dirs() -> int:
     return reap_orphan_clone_dirs()
 
 
+def _fail_unclaimed_pending(repository_id: int, exc: BaseException) -> None:
+    """Снимает PENDING-заглушку, если запуск скана упал до цепочки задач.
+
+    Карточка создаёт Scan со статусом pending сразу по кнопке. Если
+    воркер падает на импорте или до claim, строка иначе висит до таймаута
+    и страница крутит «Идёт анализ».
+    """
+
+    from django.utils import timezone
+
+    from health.models import Scan
+
+    Scan.objects.filter(
+        repository_id=repository_id,
+        status=Scan.Status.PENDING,
+    ).update(
+        status=Scan.Status.FAILED,
+        finished_at=timezone.now(),
+        error=f"Запуск анализа не удался: {exc}",
+    )
+
+
 @shared_task
 def task_check_and_scan_repository(
     repository_id: int,
@@ -205,8 +227,12 @@ def task_check_and_scan_repository(
 ) -> None:
     """Проверка хеша + запуск скана при необходимости для олного репозитория"""
 
-    from health.orchestrator import check_and_scan_repository
-    check_and_scan_repository(repository_id, force, user_id)
+    try:
+        from health.orchestrator import check_and_scan_repository
+        check_and_scan_repository(repository_id, force, user_id)
+    except Exception as exc:
+        _fail_unclaimed_pending(repository_id, exc)
+        raise
 
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=15)

@@ -21,6 +21,7 @@ from health.models import Finding, HealthScore, MetricSample, Profile, Scan
 from health.scoring import (
     CATEGORY_WEIGHTS,
     CICD_SUBMETRIC_WEIGHTS,
+    find_impact,
     scale,
     weighted_submetric_score,
 )
@@ -195,10 +196,22 @@ def _finished_at(run: dict[str, Any]) -> datetime | None:
     return parse_datetime(_run_dates(run).get("finished_at"))
 
 
+def _usable_instant(value: datetime | None) -> datetime | None:
+    """Отбрасывает пустую и нулевую метку API (1970-01-01)."""
+
+    if value is None or value.year < 2000:
+        return None
+    return value
+
+
 def _duration_minutes(run: dict[str, Any]) -> float | None:
     dates = _run_dates(run)
-    started = parse_datetime(dates.get("started_at"))
-    finished = parse_datetime(dates.get("finished_at"))
+    # started_at у прогона, который не взяли в работу, приходит как
+    # 1970-01-01. Тогда длительность — от created_at до finished_at.
+    started = _usable_instant(parse_datetime(dates.get("started_at")))
+    if started is None:
+        started = _usable_instant(parse_datetime(dates.get("created_at")))
+    finished = _usable_instant(parse_datetime(dates.get("finished_at")))
     if started is None or finished is None or finished < started:
         return None
     return (finished - started).total_seconds() / 60.0
@@ -269,9 +282,14 @@ def _build_findings(
     config_present: bool,
     stats: _RunStats | None,
     category_score: int | None,
+    submetric_scores: dict[str, float] | None = None,
 ) -> None:
     Finding.objects.filter(scan=scan, category=CATEGORY).delete()
     findings: list[Finding] = []
+    scores = submetric_scores or {}
+
+    def impact(submetric_key: str) -> int:
+        return find_impact(submetric_key, CICD_SUBMETRIC_WEIGHTS, scores)
 
     if not config_present:
         findings.append(
@@ -283,7 +301,7 @@ def _build_findings(
                 detail="В дереве репозитория не найден .sourcecraft/ci.yaml.",
                 recommendation="Добавьте .sourcecraft/ci.yaml с базовой проверкой сборки.",
                 evidence_refs=[CI_CONFIG_PATH],
-                estimated_score_impact=10,
+                estimated_score_impact=impact("ci_config_present"),
             )
         )
     elif stats is not None and stats.success_rate is not None and stats.success_rate < LOW_SUCCESS_RATE:
@@ -300,7 +318,7 @@ def _build_findings(
                 ),
                 recommendation="Разберите последний красный прогон и почините падающую проверку.",
                 evidence_refs=refs,
-                estimated_score_impact=15,
+                estimated_score_impact=impact("success_rate"),
             )
         )
 
@@ -321,7 +339,7 @@ def _build_findings(
                 ),
                 recommendation="Сократите пайплайн: кэш зависимостей и меньше шагов на каждый push.",
                 evidence_refs=[stats.last_red_url] if stats.last_red_url else [],
-                estimated_score_impact=5,
+                estimated_score_impact=impact("duration"),
             )
         )
 
@@ -403,7 +421,7 @@ def _save_scored(
             # подтверждения используем последний известный проблемный прогон.
             source_reference=(stats.last_red_url if stats is not None else ""),
         )
-        _build_findings(scan, config_present, stats, total)
+        _build_findings(scan, config_present, stats, total, submetric_scores)
         raw = {
             "ci_config_present": config_present,
             "submetric_scores": submetric_scores,
@@ -472,7 +490,7 @@ def run_cicd_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
         return _save_unavailable(scan, str(exc))
 
     stats = _collect_runs(runs, repository.url)
-    total, completeness, submetric_scores = _score(stats)
+    total, completeness, submetric_scores = _score(stats, config_present=True)
     runs_reason = "" if stats.success_rate is not None else "нет завершённых прогонов"
     return _save_scored(
         scan,

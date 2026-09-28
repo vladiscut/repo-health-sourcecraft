@@ -63,7 +63,7 @@
             <td>{{ item.repo.visibility }}</td>
             <td>{{ item.repo.language|default:"—" }}</td>
             <td>
-                {% if item.score %}
+                {% if item.score and item.score.total is not None %}
                 <span class="score {{ item.score.level }}">{{ item.score.total }}</span>
                 {% else %}
                 <span class="muted">нет данных</span>

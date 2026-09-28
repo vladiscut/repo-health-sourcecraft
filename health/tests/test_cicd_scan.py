@@ -150,7 +150,8 @@ class CicdScanTests(TestCase):
             for ref in item.evidence_refs
         ]
 
-        self.assertGreaterEqual(green_score - red_score, 25)
+        # 90% против 50% успеха при весе success_rate 0.55 — около 22 баллов.
+        self.assertGreaterEqual(green_score - red_score, 20)
         self.assertTrue(
             any(ref.startswith("https://sourcecraft.dev/acme/demo-red/cicd/runs/") for ref in red_refs)
         )
@@ -204,7 +205,6 @@ class CicdScanTests(TestCase):
             finding.evidence_refs,
             ["https://sourcecraft.dev/acme/demo/cicd/runs/from-api"],
         )
->>>>>>> master
 
     def test_runs_not_found_keeps_config_score(self):
         scan = self._scan(self.user)
@@ -241,3 +241,18 @@ class CicdScanTests(TestCase):
 
     def test_cicd_submetric_weights_sum_to_one(self):
         self.assertAlmostEqual(sum(CICD_SUBMETRIC_WEIGHTS.values()), 1.0)
+
+    def test_epoch_started_at_measures_from_created_at(self):
+        from health.cicd_scan import _duration_minutes
+
+        minutes = _duration_minutes(
+            {
+                "status": "timeout",
+                "dates": {
+                    "created_at": "2026-09-28T05:11:09.569701Z",
+                    "started_at": "1970-01-01T00:00:00Z",
+                    "finished_at": "2026-09-28T06:11:17.300228Z",
+                },
+            }
+        )
+        self.assertAlmostEqual(minutes, 60.13, delta=0.05)

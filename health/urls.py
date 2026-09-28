@@ -6,16 +6,16 @@ app_name = 'health'
 
 urlpatterns = [
     path("", views.RepoListView.as_view(), name="repo-list"),
-    path("auth/yandex/", account.yandex_login, name="yandex-login"),
-    path("auth/yandex/callback/", account.yandex_callback, name="yandex-callback"),
-    path("auth/logout/", account.yandex_logout, name="logout"),
-    path("me/", account.my_repos, name="my-repos"),
-    path("me/pat/", account.save_sourcecraft_pat, name="save-pat"),
-    path("me/pat/revoke/", account.revoke_sourcecraft_pat, name="revoke-pat"),
-    path("me/refresh/", account.refresh_my_repos, name="refresh-my-repos"),
+    path("auth/yandex/", account.YandexLoginView.as_view(), name="yandex-login"),
+    path("auth/yandex/callback/", account.YandexCallbackView.as_view(), name="yandex-callback"),
+    path("auth/logout/", account.YandexLogoutView.as_view(), name="logout"),
+    path("me/", account.MyReposView.as_view(), name="my-repos"),
+    path("me/pat/", account.SaveSourcecraftPatView.as_view(), name="save-pat"),
+    path("me/pat/revoke/", account.RevokeSourcecraftPatView.as_view(), name="revoke-pat"),
+    path("me/refresh/", account.RefreshMyReposView.as_view(), name="refresh-my-repos"),
     path(
         "me/repos/<str:org_slug>/<str:repo_slug>/analyze/",
-        account.analyze_my_repo,
+        account.AnalyzeMyRepoView.as_view(),
         name="analyze-my-repo",
     ),
     path(

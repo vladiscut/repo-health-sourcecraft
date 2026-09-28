@@ -34,6 +34,11 @@
         <div class="score big {{ score.level }}">{{ score.total }}</div>
         <div class="muted">Repo Health Score</div>
     </div>
+    {% elif score %}
+    <div class="hero-score">
+        <div class="muted">Нет данных</div>
+        <div class="muted">Скан есть, измерить метрики нельзя</div>
+    </div>
     {% else %}
     <div class="hero-score">
         <div class="muted">Score пока нет</div>
@@ -89,7 +94,7 @@
         </li>
         {% endfor %}
     </ul>
-    {% if has_null_categories %}
+    {% if has_null_categories and score.total is not None %}
     <p class="muted">Категории без данных не обнуляют итог: их вес перераспределяется между категориями, где балл есть.</p>
     {% endif %}
 </section>
@@ -116,7 +121,8 @@
         {% for finding in findings %}
         <li class="finding {{ finding.severity }}">
             <strong>{{ finding.title }}</strong>
-            <span class="tag">{{ finding.category }} · {{ finding.get_severity_display }}</span>
+            <span class="tag">{{ finding.get_category_display }} · {{ finding.get_severity_display }}</span>
+            {% if finding.estimated_score_impact %}<span class="tag impact">+{{ finding.estimated_score_impact }} к Score</span>{% endif %}
             <p>{{ finding.detail }}</p>
             {% if finding.recommendation %}<p class="rec">{{ finding.recommendation }}</p>{% endif %}
             {% for ref in finding.evidence_refs %}

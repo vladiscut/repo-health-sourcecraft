@@ -295,7 +295,7 @@ def _build_findings(
             ),
             detail=(
                 f"Открытая группа {hit.severity} анализатора {hit.scanner.upper()} "
-                "снижает балл категории Security."
+                "снижает балл категории «Безопасность»."
             ),
             recommendation="Закройте уязвимость или отметьте ложное срабатывание в AppSec.",
             evidence_refs=[hit.url] if hit.url else [],

@@ -82,6 +82,72 @@ class RepoListTests(TestCase):
         self.assertContains(response, "divkit/divkit")
         self.assertNotContains(response, "acme/tools")
 
+    def test_score_sort_puts_rows_without_score_last(self):
+        high = make_repo(
+            org_slug="sort",
+            repo_slug="high",
+            health_score=1,
+            rating_value=1,
+        )
+        low = make_repo(
+            org_slug="sort",
+            repo_slug="low",
+            health_score=99,
+            rating_value=1,
+        )
+        ghost = make_repo(
+            org_slug="sort",
+            repo_slug="ghost",
+            health_score=98,
+            rating_value=5,
+        )
+        blank = make_repo(
+            org_slug="sort",
+            repo_slug="blank",
+            health_score=70,
+            rating_value=40,
+        )
+        _make_completed_scan(high, docs=None, activity=80, ci_cd=None, security=None)
+        high.scans.get().scores.exclude(
+            category=MetricSample.Category.ACTIVITY,
+        ).update(total=None)
+        _make_completed_scan(low, docs=None, activity=20, ci_cd=None, security=None)
+        low.scans.get().scores.exclude(
+            category=MetricSample.Category.ACTIVITY,
+        ).update(total=None)
+        blank_scan = Scan.objects.create(
+            repository=blank,
+            status=Scan.Status.SUCCESS,
+            triggered_by=Scan.TriggeredBy.SCHEDULE,
+            finished_at=timezone.now(),
+        )
+        for category in MetricSample.Category:
+            HealthScore.objects.create(
+                scan=blank_scan,
+                category=category,
+                total=None,
+                weight_used=0.0,
+                data_completeness=0.0,
+            )
+
+        response = self.client.get(reverse("health:repo-list"))
+        slugs = [item["repo"].repo_slug for item in response.context["items"]]
+        self.assertEqual(
+            slugs,
+            ["high", "low", "divkit", "blank", "tools", "ghost"],
+        )
+        totals = []
+        for item in response.context["items"]:
+            score = item["score"]
+            totals.append(
+                None if score is None or score["total"] is None else score["total"]
+            )
+        self.assertEqual(totals, [80, 20, None, None, None, None])
+        html = response.content.decode()
+        self.assertLess(html.index("sort/high"), html.index("sort/low"))
+        self.assertLess(html.index("sort/low"), html.index("sort/ghost"))
+        self.assertContains(response, "нет данных")
+
     def test_sort_by_rating(self):
         response = self.client.get(reverse("health:repo-list"), {"sort": "rating"})
         html = response.content.decode()
@@ -110,6 +176,35 @@ class RepoListTests(TestCase):
         current = next(link for link in links if link.get("current"))
         self.assertEqual(current["href"], "?q=divkit&sort=rating&page=100")
 
+    def test_scanned_repo_without_scores_shows_no_data(self):
+        repo = make_repo(org_slug="empty", repo_slug="nobranch", default_branch="")
+        scan = Scan.objects.create(
+            repository=repo,
+            status=Scan.Status.SUCCESS,
+            triggered_by=Scan.TriggeredBy.SCHEDULE,
+            finished_at=timezone.now(),
+        )
+        for category, _label in MetricSample.Category.choices:
+            HealthScore.objects.create(
+                scan=scan,
+                category=category,
+                total=None,
+                weight_used=0.0,
+                data_completeness=0.0,
+            )
+        response = self.client.get(reverse("health:repo-list"), {"q": "nobranch"})
+        row = next(item for item in response.context["items"] if item["repo"].pk == repo.pk)
+        self.assertIsNone(row["score"]["total"])
+        self.assertContains(response, "нет данных")
+        self.assertNotContains(response, "None")
+
+    def test_unscanned_repo_score_is_no_data(self):
+        response = self.client.get(reverse("health:repo-list"), {"q": "divkit"})
+        row = next(item for item in response.context["items"] if item["repo"].repo_slug == "divkit")
+        self.assertIsNone(row["score"])
+        self.assertContains(response, "нет данных")
+        self.assertNotContains(response, "None")
+
     def test_pager_renders_numbers_and_jump(self):
         for index in range(PAGE_SIZE + 1):
             make_repo(repo_slug=f"paged-{index}", rating_value=index)
@@ -137,7 +232,7 @@ class RepoDetailAndExportTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Скачать Markdown")
         self.assertNotContains(response, "Скачать PDF")
-        self.assertContains(response, "Запустить анализ")
+        self.assertNotContains(response, "Запустить анализ")
         self.assertContains(
             response,
             f'<a href="{reverse("health:repo-list")}">← К списку</a>',
@@ -153,6 +248,31 @@ class RepoDetailAndExportTests(TestCase):
         self.assertContains(response, "Нет данных")
         self.assertContains(response, "перераспределяется")
         self.assertContains(response, "публичный запуск")
+
+    def test_detail_shows_no_data_when_scan_measured_nothing(self):
+        scan = Scan.objects.create(
+            repository=self.public,
+            status=Scan.Status.SUCCESS,
+            triggered_by=Scan.TriggeredBy.SCHEDULE,
+            finished_at=timezone.now(),
+        )
+        for category, _label in MetricSample.Category.choices:
+            HealthScore.objects.create(
+                scan=scan,
+                category=category,
+                total=None,
+                weight_used=0.0,
+                data_completeness=0.0,
+            )
+        response = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"])
+        )
+        self.assertIsNone(response.context["score"]["total"])
+        self.assertContains(response, "Нет данных")
+        self.assertContains(response, "измерить метрики нельзя")
+        self.assertContains(response, "нет данных")
+        self.assertNotContains(response, "Score пока нет")
+        self.assertNotContains(response, "None")
 
     def test_detail_shows_what_score_is_made_of(self):
         scan = _make_completed_scan(self.public, docs=98)
@@ -224,9 +344,13 @@ class RepoDetailAndExportTests(TestCase):
             f'<a href="{reverse("health:my-repos")}">← К списку</a>',
         )
         self.assertContains(response, 'name="from" value="me"')
+        self.assertContains(response, "Запустить анализ")
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
     def test_rescan_keeps_return_to_personal_list(self, apply_async):
+        user = get_user_model().objects.create_user("owner", password="x")
+        grant_access(user, self.public)
+        self.client.force_login(user)
         detail = reverse("health:repo-detail", args=["acme", "tools"])
         response = self.client.post(
             reverse("health:repo-rescan", args=["acme", "tools"]),
@@ -236,10 +360,10 @@ class RepoDetailAndExportTests(TestCase):
         apply_async.assert_called_once_with(
             kwargs={
                 "repository_id": self.public.id,
-                "user_id": None,
+                "user_id": user.id,
                 "force": True,
             },
-            queue="analysis.scheduled",
+            queue="analysis.user",
         )
         self.assertTrue(
             Scan.objects.filter(
@@ -275,20 +399,20 @@ class RepoDetailAndExportTests(TestCase):
         self.assertEqual(pending.triggered_by_user_id, user.id)
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
-    def test_public_stranger_rescan_uses_scheduled_queue(self, apply_async):
+    def test_public_stranger_cannot_rescan(self, apply_async):
+        stranger = get_user_model().objects.create_user("stranger", password="x")
+        self.client.force_login(stranger)
+        detail = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"])
+        )
+        self.assertNotContains(detail, "Запустить анализ")
+
         response = self.client.post(
             reverse("health:repo-rescan", args=["acme", "tools"])
         )
-        self.assertEqual(response.status_code, 302)
-        apply_async.assert_called_once_with(
-            kwargs={
-                "repository_id": self.public.id,
-                "user_id": None,
-                "force": True,
-            },
-            queue="analysis.scheduled",
-        )
-        self.assertTrue(
+        self.assertEqual(response.status_code, 404)
+        apply_async.assert_not_called()
+        self.assertFalse(
             Scan.objects.filter(
                 repository=self.public,
                 status=Scan.Status.PENDING,
@@ -297,6 +421,9 @@ class RepoDetailAndExportTests(TestCase):
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
     def test_rescan_hides_old_score_immediately(self, apply_async):
+        user = get_user_model().objects.create_user("owner", password="x")
+        grant_access(user, self.public)
+        self.client.force_login(user)
         _make_completed_scan(self.public)
         response = self.client.post(
             reverse("health:repo-rescan", args=["acme", "tools"]),
@@ -326,6 +453,9 @@ class RepoDetailAndExportTests(TestCase):
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
     def test_rescan_while_active_does_not_queue_again(self, apply_async):
+        user = get_user_model().objects.create_user("owner", password="x")
+        grant_access(user, self.public)
+        self.client.force_login(user)
         Scan.objects.create(
             repository=self.public,
             status=Scan.Status.RUNNING,
@@ -503,6 +633,34 @@ class RepoDetailAndExportTests(TestCase):
         body = md.content.decode("utf-8")
         self.assertIn(page_url, body)
         self.assertNotIn(".sourcecraft/ci.yaml", body)
+        self.assertNotIn("к Score", page.content.decode("utf-8"))
+
+    def test_finding_shows_score_impact(self):
+        # Балл категории 90, сырой вклад 25 не влезает в запас 10.
+        # Вес категории 0.20 → прирост общего Score равен 2.
+        scan = _make_completed_scan(self.public)
+        HealthScore.objects.filter(
+            scan=scan,
+            category=MetricSample.Category.CODE_HEALTH,
+        ).update(total=90, weight_used=0.20)
+        Finding.objects.create(
+            scan=scan,
+            category=MetricSample.Category.CODE_HEALTH,
+            severity=Finding.Severity.HIGH,
+            title="Не найдено тестов",
+            detail="Тестов нет.",
+            recommendation="Добавьте тесты.",
+            estimated_score_impact=25,
+        )
+
+        page = self.client.get(reverse("health:repo-detail", args=["acme", "tools"]))
+        self.assertContains(page, "+2 к Score")
+        self.assertNotContains(page, "+25 к Score")
+
+        md = self.client.get(reverse("health:repo-export", args=["acme", "tools", "md"]))
+        body = md.content.decode("utf-8")
+        self.assertIn("Ожидаемый прирост Repo Health Score: +2", body)
+        self.assertNotIn("+25", body)
 
     def test_export_markdown_contains_score(self):
         _make_completed_scan(self.public)

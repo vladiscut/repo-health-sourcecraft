@@ -3,7 +3,12 @@
 from django.template.loader import render_to_string
 
 from health.models import HealthScore, MetricSample, Repository, Scan
-from health.scoring import CATEGORY_LABELS, overall_from_category_totals, present_scores
+from health.scoring import (
+    CATEGORY_LABELS,
+    overall_finding_impacts,
+    overall_from_category_totals,
+    present_scores,
+)
 from health.security_scan import plain_security_reason
 
 
@@ -59,6 +64,33 @@ def _categories_for_report(scan: Scan | None) -> list[dict]:
     return rows
 
 
+def with_overall_impacts(scan: Scan) -> list:
+    """Находки с estimated_score_impact в баллах общего Score.
+
+    После агрегации поле уже пересчитано, исходные баллы категории
+    лежат в scan.raw. У более ранних сканов в поле ещё баллы категории:
+    их нормируем здесь, не записывая обратно.
+    """
+
+    findings = list(scan.findings.all())
+    raw = scan.raw or {}
+    if "finding_category_points" in raw:
+        return findings
+
+    scores = {row.category: row for row in scan.scores.all()}
+    impacts = overall_finding_impacts(
+        [(item.category, item.estimated_score_impact) for item in findings],
+        {category: row.total for category, row in scores.items()},
+        {category: row.weight_used or 0.0 for category, row in scores.items()},
+    )
+    for item, impact in zip(findings, impacts):
+        item.estimated_score_impact = impact
+    findings.sort(
+        key=lambda item: (-item.estimated_score_impact, -int(item.severity or 0))
+    )
+    return findings
+
+
 def build_markdown_report(repository: Repository) -> str:
     """Markdown по последнему завершённому Scan репозитория."""
 
@@ -67,7 +99,7 @@ def build_markdown_report(repository: Repository) -> str:
     findings = []
     if scan is not None:
         totals.update({row.category: row.total for row in scan.scores.all()})
-        findings = list(scan.findings.all())
+        findings = with_overall_impacts(scan)
         findings.sort(
             key=lambda item: (
                 SEVERITY_ORDER.get(item.severity, 9),

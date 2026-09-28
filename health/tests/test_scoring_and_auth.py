@@ -9,8 +9,7 @@ from health.scoring import (
     _weighted_overall,
     compute_finding_impact,
     find_impact,
-    impact_relation,
-    impacts_relation,
+    overall_finding_impacts,
     overall_from_category_totals,
     present_scores,
     score_docs_category,
@@ -53,14 +52,14 @@ class ScoringTests(SimpleTestCase):
         presented = present_scores({MetricSample.Category.DOCS: 0})
         by_name = dict(presented["categories"])
         self.assertEqual(by_name["Документация"], 0)
-        self.assertIsNone(by_name["Security"])
+        self.assertIsNone(by_name["Безопасность"])
         self.assertEqual(len(presented["categories"]), 6)
         self.assertEqual(score_level(40), "low")
         self.assertEqual(score_level(None), "")
 
 
 class FindImpactTests(SimpleTestCase):
-    """design.md D1: impact находки = баллы КАТЕГОРИИ, не общего Score."""
+    """find_impact — баллы категории с тем же нормированием, что и балл."""
 
     def test_missing_submetric_is_zero(self):
         self.assertEqual(
@@ -74,13 +73,25 @@ class FindImpactTests(SimpleTestCase):
             0,
         )
 
-    def test_weight_times_headroom(self):
+    def test_weight_times_headroom_when_all_submetrics_present(self):
+        scores = {key: 100.0 for key in DOCS_SUBMETRIC_WEIGHTS}
+        scores["contributing_codeowners"] = 0.0
+        impact = find_impact(
+            "contributing_codeowners",
+            DOCS_SUBMETRIC_WEIGHTS,
+            scores,
+        )
+        self.assertEqual(impact, 15)
+
+    def test_lone_submetric_takes_the_whole_category(self):
+        # Вес 0.15, но это единственная посчитанная субметрика:
+        # балл категории равен её баллу, запас — все 100.
         impact = find_impact(
             "contributing_codeowners",
             DOCS_SUBMETRIC_WEIGHTS,
             {"contributing_codeowners": 0.0},
         )
-        self.assertEqual(impact, 15)
+        self.assertEqual(impact, 100)
 
     def test_full_score_is_zero(self):
         impact = find_impact(
@@ -92,92 +103,54 @@ class FindImpactTests(SimpleTestCase):
 
     def test_partial_score_is_prorated(self):
         # 0.15 * (100 - 50) = 7.5 -> round -> 8
+        scores = {key: 100.0 for key in DOCS_SUBMETRIC_WEIGHTS}
+        scores["contributing_codeowners"] = 50.0
         impact = find_impact(
             "contributing_codeowners",
             DOCS_SUBMETRIC_WEIGHTS,
-            {"contributing_codeowners": 50.0},
+            scores,
         )
         self.assertEqual(impact, 8)
 
 
-class ImpactRelationTests(SimpleTestCase):
-    """impact_relation: impact категории -> отношение [1..100] к баллу категории."""
+class OverallFindingImpactTests(SimpleTestCase):
+    """Баллы категории × вес категории = прирост общего Score."""
 
-    def test_no_category_total_is_zero(self):
-        self.assertEqual(impact_relation(25, None), 0)
+    def test_shrinks_impact_that_exceeds_category_headroom(self):
+        # Категория уже 90, сырой вклад 25 не помещается в запас 10.
+        # 10 * вес 0.20 = 2 балла общего Score.
+        impacts = overall_finding_impacts(
+            [("code_health", 25)],
+            {"code_health": 90},
+            {"code_health": 0.20},
+        )
+        self.assertEqual(impacts, [2])
 
-    def test_zero_impact_is_zero(self):
-        self.assertEqual(impact_relation(0, 31), 0)
+    def test_scales_fitting_impact_by_category_weight(self):
+        # Запас категории 25, вклад 25, вес 0.20 → 5 баллов Score.
+        impacts = overall_finding_impacts(
+            [("code_health", 25)],
+            {"code_health": 75},
+            {"code_health": 0.20},
+        )
+        self.assertEqual(impacts, [5])
 
-    def test_code_health_tests_finding(self):
-        # реальные данные: code_health=31, impact 25 -> round(25/31*100)=81
-        self.assertEqual(impact_relation(25, 31), 81)
+    def test_shared_submetric_does_not_exceed_headroom(self):
+        impacts = overall_finding_impacts(
+            [("security", 50), ("security", 50)],
+            {"security": 50},
+            {"security": 0.20},
+        )
+        self.assertEqual(impacts, [5, 5])
+        self.assertLessEqual(sum(impacts), round(50 * 0.20))
 
-    def test_code_health_junk_finding(self):
-        # реальные данные: code_health=31, impact 7 -> round(7/31*100)=23
-        self.assertEqual(impact_relation(7, 31), 23)
-
-    def test_activity_finding(self):
-        # реальные данные: activity=55, impact 25 -> round(25/55*100)=45
-        self.assertEqual(impact_relation(25, 55), 45)
-
-    def test_docs_finding(self):
-        # реальные данные: docs=69, impact 15 -> round(15/69*100)=22
-        self.assertEqual(impact_relation(15, 69), 22)
-
-    def test_zero_category_total_is_hundred(self):
-        # реальные данные: ci_cd=0, impact 10 -> категория мертва -> 100
-        self.assertEqual(impact_relation(10, 0), 100)
-
-    def test_ratio_is_capped_at_hundred(self):
-        # impact 60 при total 30 -> 200% -> зажато до 100
-        self.assertEqual(impact_relation(60, 30), 100)
-
-    def test_small_impact_has_floor_of_one(self):
-        # impact 1 при total 200 -> 0.5% -> round 1
-        self.assertEqual(impact_relation(1, 200), 1)
-
-
-class ImpactsRelationTests(SimpleTestCase):
-    """impacts_relation: набор impact'ов -> доли [0..100] с суммой ровно 100."""
-
-    def test_real_code_health_sums_to_hundred(self):
-        # реальные данные: [25, 15, 15, 7], сумма 62
-        # квоты: 40.32, 24.19, 24.19, 11.29 -> floors [40,24,24,11]=99,
-        # остаток 1 уходит наибольшей дробной части (индекс 0) -> [41,24,24,11]
-        result = impacts_relation([25, 15, 15, 7])
-        self.assertEqual(sum(result), 100)
-        self.assertEqual(result, [41, 24, 24, 11])
-
-    def test_activity_single_finding_is_hundred(self):
-        self.assertEqual(impacts_relation([25]), [100])
-
-    def test_docs_pair_sums_to_hundred(self):
-        # [15, 15] -> [50, 50]
-        self.assertEqual(impacts_relation([15, 15]), [50, 50])
-
-    def test_empty_is_empty(self):
-        self.assertEqual(impacts_relation([]), [])
-
-    def test_all_zero_is_zeros(self):
-        self.assertEqual(impacts_relation([0, 0, 0]), [0, 0, 0])
-
-    def test_negative_treated_as_zero(self):
-        # [-5, 10] -> веса [0, 10] -> [0, 100]
-        self.assertEqual(impacts_relation([-5, 10]), [0, 100])
-
-    def test_rounding_remainder_distributed(self):
-        # три равных веса: 100/3 = 33.33 -> [34, 33, 33] в сумме 100
-        result = impacts_relation([1, 1, 1])
-        self.assertEqual(sum(result), 100)
-        self.assertEqual(sorted(result, reverse=True), [34, 33, 33])
-
-    def test_order_preserved(self):
-        # больший вес получает большую долю на своей позиции
-        result = impacts_relation([7, 25, 15, 15])
-        self.assertEqual(sum(result), 100)
-        self.assertEqual(len(result), 4)
-        self.assertGreater(result[1], result[0])
+    def test_missing_category_is_zero(self):
+        impacts = overall_finding_impacts(
+            [("docs", 15)],
+            {"docs": None},
+            {"docs": 0.0},
+        )
+        self.assertEqual(impacts, [0])
 
 
 class SubmetricWeightsMapTests(SimpleTestCase):

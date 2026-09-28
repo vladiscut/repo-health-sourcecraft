@@ -14,7 +14,8 @@ from django.views.generic import DetailView, ListView
 
 from core.celery import USER_QUEUE_NAME, SCHEDULE_QUEUE_NAME
 from health.models import Finding, Repository, Scan, UserRepositoryAccess
-from health.reports import build_markdown_report
+from health.repo_ordering import annotate_visible_score
+from health.reports import build_markdown_report, with_overall_impacts
 from health.score_breakdown import rows_for_scores
 from health.scoring import CATEGORY_LABELS, present_scores
 from health.tasks import task_check_and_scan_repository
@@ -28,7 +29,7 @@ WEAK_CATEGORY_THRESHOLD = 50
 
 SORTS = {
     "score": (
-        F("health_score").desc(nulls_last=True),
+        F("visible_score").desc(nulls_last=True),
         F("rating_value").desc(nulls_last=True),
         F("last_updated").desc(nulls_last=True),
     ),
@@ -227,6 +228,8 @@ class RepoListView(ListView):
             )
         if self.language:
             repos = repos.filter(language=self.language)
+        if self.selected_sort == "score":
+            repos = annotate_visible_score(repos)
         return repos.order_by(*SORTS[self.selected_sort]).prefetch_related(
             Prefetch(
                 "scans",
@@ -334,11 +337,7 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                     "total": item_presented["total"] if item_presented else None,
                 }
             )
-        personal = _user_can_run_personal_scan(self.request.user, repo)
-        can_analyze = (
-            personal
-            or repo.visibility == Repository.VisibilityType.PUBLIC
-        )
+        can_analyze = _user_can_run_personal_scan(self.request.user, repo)
         from_me = _opened_from_personal_list(self.request)
         has_null = bool(
             presented
@@ -353,7 +352,7 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                     "health:repo-scan-status",
                     args=[repo.org_slug, repo.repo_slug],
                 ),
-                "findings": scan.findings.all() if scan else [],
+                "findings": with_overall_impacts(scan) if scan else [],
                 "strengths": strengths,
                 "weaknesses": weaknesses,
                 "has_null_categories": has_null,
@@ -378,20 +377,16 @@ class RepoRescanView(RepositoryAccessMixin, View):
     def post(self, request, org_slug, repo_slug):
         repo = self.get_repository()
 
+        if not _user_can_run_personal_scan(request.user, repo):
+            raise Http404()
+
         if _active_scan(repo) is not None:
             messages.info(request, "Анализ этого репозитория уже идёт.")
             return _repo_detail_redirect(request, org_slug, repo_slug)
 
-        if _user_can_run_personal_scan(request.user, repo):
-            user_id = request.user.id
-            queue = USER_QUEUE_NAME
-            triggered_by = Scan.TriggeredBy.USER
-        elif repo.visibility == Repository.VisibilityType.PUBLIC:
-            user_id = None
-            queue = SCHEDULE_QUEUE_NAME
-            triggered_by = Scan.TriggeredBy.SCHEDULE
-        else:
-            raise Http404()
+        user_id = request.user.id
+        queue = USER_QUEUE_NAME
+        triggered_by = Scan.TriggeredBy.USER
 
         # PENDING сразу в БД: после редиректа карточка покажет loader,
         # а не предыдущий успешный Score, пока Celery ещё не стартовал.

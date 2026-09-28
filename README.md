@@ -1,77 +1,77 @@
 # Repo Health
 
-Сервис оценки здоровья открытых репозиториев SourceCraft.
-Стек: Django, шаблоны, DRF, Postgres, Redis, Celery.
+Веб-сервис оценки здоровья репозиториев SourceCraft. Считает **Repo Health Score** от 0 до 100, объясняет балл по шести категориям и отдаёт приоритизированные рекомендации.
 
-## Как поднять локально
+Стек: Django, шаблоны, Django REST framework, Postgres, Redis, Celery.
 
-Нужен Docker. В `.env` — токен SourceCraft, иначе каталог не приедет.
+Методика: [docs/scoring.md](docs/scoring.md). Архитектура, API и ограничения: [docs/architecture.md](docs/architecture.md).
+
+## Как поднять
+
+Нужен Docker. Скопируйте `.env.example` в `.env` и укажите `SOURCECRAFT_API_TOKEN` — без него каталог публичных репозиториев не загрузится. Для личного кабинета `/me/` нужны `YANDEX_CLIENT_ID` и `YANDEX_CLIENT_SECRET`.
 
 ```powershell
-cd G:\NextDevProjects\repo-health
 copy .env.example .env
-# в .env: SOURCECRAFT_API_TOKEN=<PAT команды>
-# для /me/: YANDEX_CLIENT_ID и YANDEX_CLIENT_SECRET приложения Я ID
 docker compose up --build
 ```
 
-Открыть http://127.0.0.1:8002/
+Откройте http://127.0.0.1:8002/
 
-- `/` — публичный список, по 50 репо, фильтр по языку, сортировка по Score / рейтингу
-- `/repos/<org>/<repo>/` — карточка, заготовка выгрузки Markdown/PDF
-- `/me/` — личные репозитории после входа через Я ID
-- `/admin/` — Django admin
-- `/api/v1/repos/` — JSON, тоже по 50
+| Адрес | Что там |
+|---|---|
+| `/` | Публичный рейтинг, по 50 репозиториев на страницу |
+| `/repos/<org>/<repo>/` | Карточка: Score, категории, рекомендации, выгрузка Markdown |
+| `/me/` | Вход через Я ID, PAT SourceCraft, свои репозитории |
+| `/api/v1/repos/` | JSON публичного каталога, тоже по 50 |
+| `/admin/` | Django admin |
 
-Первый запуск: Celery worker при старте ставит `task_update_all_public_repos`. Каталог копится пачками (~2000 за проход), всего в SourceCraft больше 27 тысяч. Страницу списка можно открывать сразу — она больше не грузит всю таблицу.
+Остановить: `Ctrl+C` или `docker compose down`. База остаётся в томе `postgres-repo-health-volume`.
 
-Остановить: `Ctrl+C` в том же терминале или `docker compose down`. База на диске остаётся (`postgres-repo-health-volume`).
+Первый запуск, если таблица репозиториев пустая, ставит обход каталога. Страницу списка можно открыть сразу: она не грузит всю таблицу.
+
+## Два контура
+
+Публичный рейтинг считает документацию, активность, issues и состояние кода. CI/CD и Security для чужого репозитория не запрашиваются: на карточке они «Нет данных», их вес переходит к категориям, где балл есть.
+
+После входа через Я ID и сохранения PAT кнопка «Запустить анализ» на своём репозитории считает все шесть категорий, включая CI и AppSec. Закрытый репозиторий в публичный список не попадает.
+
+Лайки в формулу Score не входят. Они остаются колонкой реакций в рейтинге.
+
+## Расписание
+
+Celery beat (`celery-beat-repo-health`):
+
+| Задача | Когда |
+|---|---|
+| Обход каталога публичных репозиториев | каждые 12 часов, в 00:00 и 12:00 |
+| Плановый пересчёт Score | каждые 6 часов, в :30 |
+| Снятие зависших сканов | каждые 20 минут |
+| Удаление осиротевших каталогов клонов | каждый час |
+
+Повторный плановый скан пропускает репозиторий, если хеш ветки по умолчанию не изменился и уже есть завершённый скан. Зависшим считается скан, который дольше `SCAN_STALE_TIMEOUT_MINUTES` остаётся в ожидании или в работе.
+
+Проверить beat: `docker compose logs celery-beat-repo-health`.
+
+Очереди разделены. Плановый обход слушает `celery-scheduled-repo-health` (`analysis.scheduled`). Нажатие «Запустить анализ» на своём репозитории уходит в `celery-user-repo-health` (`analysis.user`).
 
 ## Тесты
 
-Без Docker, SQLite in-memory:
+Без Docker, SQLite в памяти:
 
 ```powershell
-python manage.py test health --settings=core.test_settings -v2
+python manage.py test health integrations --settings=core.test_settings -v2
 ```
 
-## Что сейчас работает
+## Стенд
 
-- Обход публичных репо через `GET /repos` (Discover)
-- Список с пагинацией, поиском, фильтром по языку, сортировкой по Score / рейтингу SourceCraft / дате / имени
-- Карточка с метаданными, реакциями 👍❤️💎 и заготовкой выгрузки Markdown/PDF (пока пустой файл)
-- Вход через Я ID и страница `/me/`: PAT SourceCraft, список своих репо, кнопка запуска анализа (очередь, сбор метрик ещё заглушка)
+```powershell
+docker compose -f docker-compose-server-prod.yml up -d --build
+```
 
-## Чего нет и чего не делать
+Web слушает gunicorn и публикует порт только на `127.0.0.1`. В `.env` стенда: `DEBUG=False`, `VIRTUAL_HOSTS`, `ALLOWED_HOSTS` и `YANDEX_REDIRECT_URI=https://<домен>/auth/yandex/callback/`. HTTPS на этой ВМ поднимается отдельным reverse proxy: контейнера Caddy или nginx в репозитории нет.
 
-- Score почти у всех «нет данных»: скан метрик (`task_scan_user_repository`) ещё заглушка. Кнопка анализа ставит задачу, но оценку не посчитает.
-- Не гоняйте массовый scan на 27k репо — сожжёте лимит API (100 rps), пользы нет.
-- CI/CD и AppSec в публичном рейтинге не смотрим — только личный кабинет (`/me/`).
-- Отчёт Markdown/PDF — заготовка, файл пока пустой.
-- `seed_demo` больше не запускается при старте. Файл команды может лежать в репо, для локального стенда не нужен.
+## Если страница пустая
 
-## Как устроен проект
-
-| Путь | Зачем |
-|---|---|
-| `health/views.py` | HTML: публичный список, карточка, выгрузка |
-| `health/account.py` | Я ID и `/me/` |
-| `templates/health/` | Шаблоны |
-| `health/services.py` | Маппинг JSON SourceCraft → `Repository` |
-| `health/tasks.py` | Celery: обход каталога; scan — TODO |
-| `integrations/sourcecraft.py` | HTTP-клиент API |
-| `integrations/yandex.py` | OAuth Я ID |
-| `health/scoring.py` | Формула Score (пока не подключена к scan) |
-| `health/models.py` | Repository, Scan, MetricSample, HealthScore, Finding, Profile |
-| `core/` | settings, urls, celery |
-| `docker-compose.yml` | web, postgres, redis, worker, beat |
-
-Два контура: `/` публичный, `/me/` личный. Для `/me/` нужен Я ID и PAT SourceCraft.
-
-Юрий ведёт ingest (клиент, services, discover-таски). Список и карточка — витрина, её можно править не пересекаясь с ним.
-
-## Если что-то не открывается
-
-1. `docker compose ps` — все пять сервисов `running` / `healthy`.
-2. Нет репо на `/` — нет токена или worker ещё не отходил. Логи: `docker compose logs celery-repo-health`.
-3. Страница тормозит — убедитесь, что это свежий код с пагинацией (в подзаголовке есть число репозиториев и блок «50»).
+1. `docker compose ps` — web, postgres, pgbouncer, redis, оба воркера и beat в состоянии running.
+2. Нет репозиториев на `/` — пустой `SOURCECRAFT_API_TOKEN` или каталог ещё не дошёл. Логи: `docker compose logs celery-scheduled-repo-health`.
+3. На карточке «Нет данных» по CI и Security у чужого публичного репозитория — так и задумано, пока анализ не запущен владельцем со своим PAT.

@@ -113,7 +113,7 @@ class ScoreBreakdownTests(SimpleTestCase):
             {"open_critical_count": 0, "open_high_count": 0, "transitive_critical_count": 0},
             100,
         )
-        self.assertEqual(clean[0]["label"], "Открытых critical и high нет")
+        self.assertEqual(clean[0]["label"], "Открытых критических и высоких нет")
 
     def test_missing_category_shows_reason(self):
         parts = explain_category(
@@ -154,3 +154,112 @@ class ScoreBreakdownTests(SimpleTestCase):
         self.assertEqual(rows[0]["label"], "Документация")
         self.assertEqual(rows[0]["parts"][0]["label"], "Лицензия")
         self.assertIsNone(rows[2]["value"])
+        self.assertEqual(rows[2]["label"], "Безопасность")
+        self.assertEqual(rows[5]["label"], "Состояние кода")
+
+    def test_code_health_parts_are_readable(self):
+        parts = explain_category(
+            MetricSample.Category.CODE_HEALTH,
+            {
+                "include_todo_age": True,
+                "tests_present": True,
+                "lint_config_present": True,
+                "vendored_deps_present": False,
+                "generated_artifacts_present": True,
+                "binary_junk_present": False,
+                "is_data_only_repo": False,
+                "is_flat_dump": False,
+                "dependency_manifest_present": True,
+                "lockfile_present": True,
+                "todo_total_count": 0,
+                "todo_age_available": True,
+                "submetric_scores": {
+                    "tests_present": 100,
+                    "lint_config_present": 100,
+                    "no_committed_junk": 67,
+                    "structure": 100,
+                    "dependency_hygiene": 100,
+                    "todo_debt": 100,
+                },
+            },
+            92,
+        )
+        by_label = {part["label"]: part for part in parts}
+        self.assertEqual(
+            set(by_label),
+            {
+                "Тесты",
+                "Линтер",
+                "Чистота репозитория",
+                "Структура кода",
+                "Зависимости",
+                "TODO и FIXME",
+            },
+        )
+        self.assertEqual(by_label["Тесты"]["detail"], "есть")
+        self.assertEqual(by_label["Чистота репозитория"]["detail"], "каталоги сборки")
+        self.assertEqual(by_label["Чистота репозитория"]["score"], 67)
+        self.assertEqual(by_label["TODO и FIXME"]["detail"], "нет")
+        self.assertEqual(by_label["Зависимости"]["detail"], "манифест и lockfile")
+        self.assertEqual(by_label["Структура кода"]["detail"], "код разложен по каталогам")
+        self.assertEqual(sum(part["share"] for part in parts), 100)
+
+    def test_security_submetrics_use_russian_labels(self):
+        parts = explain_category(
+            MetricSample.Category.SECURITY,
+            {
+                "open_critical_count": 2,
+                "transitive_critical_count": 1,
+                "open_high_count": 1,
+                "submetric_scores": {"direct": 0, "transitive": 0, "high": 0},
+            },
+            40,
+        )
+        self.assertEqual(
+            [part["label"] for part in parts],
+            ["Прямые критические", "Транзитивные критические", "Высокие"],
+        )
+        self.assertEqual(parts[0]["detail"], "1 × −30")
+        self.assertEqual(parts[2]["detail"], "1 × −10")
+
+    def test_cicd_config_key_is_labeled(self):
+        parts = explain_category(
+            MetricSample.Category.CI_CD,
+            {
+                "ci_config_present": False,
+                "submetric_scores": {"ci_config_present": 0},
+            },
+            0,
+        )
+        self.assertEqual(parts[0]["label"], "Конфигурация CI")
+        self.assertEqual(parts[0]["detail"], "нет .sourcecraft/ci.yaml")
+
+    def test_every_weighted_submetric_has_a_readable_label(self):
+        from health.score_breakdown import SUBMETRIC_LABELS
+        from health.scoring import (
+            ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS,
+            ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS,
+            CICD_SUBMETRIC_WEIGHTS,
+            CODE_HEALTH_SUBMETRIC_WEIGHTS,
+            CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE,
+            DOCS_SUBMETRIC_WEIGHTS,
+            ISSUES_SUBMETRIC_WEIGHTS,
+            SECURITY_SUBMETRIC_WEIGHTS,
+        )
+
+        keys = set()
+        for weights in (
+            DOCS_SUBMETRIC_WEIGHTS,
+            ISSUES_SUBMETRIC_WEIGHTS,
+            CODE_HEALTH_SUBMETRIC_WEIGHTS,
+            CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE,
+            CICD_SUBMETRIC_WEIGHTS,
+            ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS,
+            ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS,
+            SECURITY_SUBMETRIC_WEIGHTS,
+        ):
+            keys.update(weights)
+        for key in keys:
+            label = SUBMETRIC_LABELS[key]
+            self.assertNotEqual(label, key)
+            self.assertNotRegex(label, r"^[a-z0-9_]+$")

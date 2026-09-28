@@ -36,10 +36,10 @@ CICD_SUBMETRIC_WEIGHTS = {
 CATEGORY_LABELS = {
     MetricSample.Category.DOCS: "Документация",
     MetricSample.Category.CI_CD: "CI/CD",
-    MetricSample.Category.SECURITY: "Security",
+    MetricSample.Category.SECURITY: "Безопасность",
     MetricSample.Category.ACTIVITY: "Активность",
     MetricSample.Category.ISSUES: "Issues",
-    MetricSample.Category.CODE_HEALTH: "Code health",
+    MetricSample.Category.CODE_HEALTH: "Состояние кода",
 }
 
 
@@ -101,29 +101,76 @@ def find_impact(
     submetric_weights: dict[str, float],
     submetric_scores: dict[str, float],
 ) -> int:
-    """Сколько баллов КАТЕГОРИИ вернёт устранение проблемы по субметрике.
+    """Сколько баллов категории вернёт доведение субметрики до 100.
 
-    Контракт `estimated_score_impact` находки (см. design.md D1): целое
-    число 0-100, равное числу баллов категории, которое вернёт доведение
-    субметрики до 100.
+    Доля веса берётся только среди субметрик, которые реально посчитаны —
+    так же, как ``weighted_submetric_score`` нормирует знаменатель.
+    Иначе вклад находки не сходится с баллом категории: сырой вес 0.25
+    даёт 25, хотя при неполных данных эта субметрика может занимать
+    другую долю балла.
 
-    Правило:
+    В прирост общего Repo Health Score это переводит
+    ``overall_finding_impacts``: баллы категории умножаются на фактический
+    вес категории.
 
-    - если `submetric_key` отсутствует в `submetric_scores` (метрику не
-      удалось получить) или в `submetric_weights` — 0: исправление
-      недоступной метрики балл не меняет;
-    - иначе ``round(weight * (100 - score))``.
-
-    Пример: ``contributing_codeowners`` с весом 0.15 и баллом 0 -> 15.
+    Если ключа нет в баллах или в весах — 0: недоступная метрика балл
+    не меняет. Пример: все субметрики Docs на месте,
+    ``contributing_codeowners`` с весом 0.15 и баллом 0 → 15.
     """
 
     if submetric_key not in submetric_scores:
         return 0
     if submetric_key not in submetric_weights:
         return 0
+    available = sum(
+        submetric_weights[key]
+        for key in submetric_scores
+        if key in submetric_weights
+    )
+    if available <= 0:
+        return 0
     weight = submetric_weights[submetric_key]
     score = submetric_scores[submetric_key]
-    return round(weight * (100.0 - score))
+    return round((weight / available) * (100.0 - score))
+
+
+def overall_finding_impacts(
+    findings: list[tuple[str, int]],
+    category_totals: dict[str, int | None],
+    category_weights: dict[str, float],
+) -> list[int]:
+    """Прирост общего Score 0–100 по каждой находке.
+
+    ``findings`` — пары ``(категория, баллы категории)`` в исходном порядке.
+    Баллы категории — это ``find_impact``: сколько баллов 0–100 вернёт
+    исправление внутри категории. Общий Score двигается только на долю
+    веса категории.
+
+    Если сумма таких баллов больше запаса категории до 100, они
+    пропорционально уменьшаются. Так несколько находок по одной
+    субметрике не обещают больше, чем категория реально может прибавить.
+    Категория без балла или с нулевым весом даёт 0.
+    """
+
+    grouped: dict[str, list[int]] = {}
+    for index, (category, _points) in enumerate(findings):
+        grouped.setdefault(category, []).append(index)
+
+    result = [0] * len(findings)
+    for category, indexes in grouped.items():
+        total = category_totals.get(category)
+        weight = category_weights.get(category) or 0.0
+        if total is None or weight <= 0:
+            continue
+        headroom = max(0, 100 - int(total))
+        raw = [max(0, int(findings[index][1])) for index in indexes]
+        raw_sum = sum(raw)
+        if headroom == 0 or raw_sum <= 0:
+            continue
+        factor = min(1.0, headroom / raw_sum)
+        for index, points in zip(indexes, raw):
+            result[index] = round(points * factor * weight)
+    return result
 
 
 _SEVERITY_ORDER = [

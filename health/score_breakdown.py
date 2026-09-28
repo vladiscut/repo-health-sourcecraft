@@ -9,10 +9,13 @@ from health.scoring import (
     ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS,
     CATEGORY_LABELS,
     CICD_SUBMETRIC_WEIGHTS,
+    CODE_HEALTH_SUBMETRIC_WEIGHTS,
+    CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE,
     DOCS_SUBMETRIC_WEIGHTS,
     ISSUES_SUBMETRIC_WEIGHTS,
     SECURITY_DIRECT_CRITICAL_PENALTY,
     SECURITY_HIGH_PENALTY,
+    SECURITY_SUBMETRIC_WEIGHTS,
     SECURITY_TRANSITIVE_CRITICAL_PENALTY,
 )
 from health.security_scan import plain_security_reason
@@ -36,6 +39,16 @@ SUBMETRIC_LABELS = {
     "first_response": "Первый ответ",
     "time_to_close": "Время закрытия",
     "close_rate_30d": "Закрытие за 30 дней",
+    "tests_present": "Тесты",
+    "no_committed_junk": "Чистота репозитория",
+    "structure": "Структура кода",
+    "lint_config_present": "Линтер",
+    "dependency_hygiene": "Зависимости",
+    "todo_debt": "TODO и FIXME",
+    "ci_config_present": "Конфигурация CI",
+    "direct": "Прямые критические",
+    "transitive": "Транзитивные критические",
+    "high": "Высокие",
 }
 
 
@@ -112,6 +125,15 @@ def _weights(category: str, raw: dict, submetrics: dict) -> dict[str, float]:
         if include_commits:
             return ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS
         return ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS
+    if category == MetricSample.Category.CODE_HEALTH:
+        include_todo_age = raw.get("include_todo_age")
+        if include_todo_age is None:
+            include_todo_age = raw.get("todo_age_available")
+        if include_todo_age is False:
+            return CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE
+        return CODE_HEALTH_SUBMETRIC_WEIGHTS
+    if category == MetricSample.Category.SECURITY:
+        return SECURITY_SUBMETRIC_WEIGHTS
     return {}
 
 
@@ -155,18 +177,18 @@ def _security_parts(raw: dict) -> list[dict]:
     direct = critical_count - transitive
     parts = []
     if direct:
-        parts.append(_part("Прямые critical", detail=f"{direct} × −{SECURITY_DIRECT_CRITICAL_PENALTY}"))
+        parts.append(_part("Прямые критические", detail=f"{direct} × −{SECURITY_DIRECT_CRITICAL_PENALTY}"))
     if transitive:
         parts.append(
             _part(
-                "Транзитивные critical",
+                "Транзитивные критические",
                 detail=f"{transitive} × −{SECURITY_TRANSITIVE_CRITICAL_PENALTY}",
             )
         )
     if high_count:
-        parts.append(_part("High", detail=f"{high_count} × −{SECURITY_HIGH_PENALTY}"))
+        parts.append(_part("Высокие", detail=f"{high_count} × −{SECURITY_HIGH_PENALTY}"))
     if not parts:
-        return [_part("Открытых critical и high нет")]
+        return [_part("Открытых критических и высоких нет")]
     return parts
 
 
@@ -179,6 +201,10 @@ def _detail(category: str, key: str, raw: dict) -> str:
         return _issues_detail(key, raw)
     if category == MetricSample.Category.CI_CD:
         return _cicd_detail(key, raw)
+    if category == MetricSample.Category.CODE_HEALTH:
+        return _code_health_detail(key, raw)
+    if category == MetricSample.Category.SECURITY:
+        return _security_detail(key, raw)
     return ""
 
 
@@ -238,12 +264,105 @@ def _issues_detail(key: str, raw: dict) -> str:
 
 
 def _cicd_detail(key: str, raw: dict) -> str:
+    if key == "ci_config_present":
+        if raw.get("ci_config_present") is False:
+            return "нет .sourcecraft/ci.yaml"
+        if raw.get("success_rate") is None and raw.get("median_duration_minutes") is None:
+            return "завершённых прогонов нет"
+        return "файл есть"
     if key == "success_rate":
         return _fmt_ratio(raw.get("success_rate"))
     if key == "duration":
         minutes = _fmt_number(raw.get("median_duration_minutes"))
         if minutes:
             return f"{minutes} мин"
+    return ""
+
+
+def _code_health_detail(key: str, raw: dict) -> str:
+    if key == "tests_present":
+        return _yes_no(raw.get("tests_present"), yes="есть", no="не найдены")
+    if key == "lint_config_present":
+        return _yes_no(raw.get("lint_config_present"), yes="конфиг есть", no="конфига нет")
+    if key == "no_committed_junk":
+        kinds = []
+        if raw.get("vendored_deps_present"):
+            kinds.append("зависимости в git")
+        if raw.get("generated_artifacts_present"):
+            kinds.append("каталоги сборки")
+        if raw.get("binary_junk_present"):
+            kinds.append("бинарные файлы")
+        if kinds:
+            return ", ".join(kinds)
+        flags = (
+            raw.get("vendored_deps_present"),
+            raw.get("generated_artifacts_present"),
+            raw.get("binary_junk_present"),
+        )
+        if any(flag is False for flag in flags):
+            return "лишних файлов нет"
+        return ""
+    if key == "structure":
+        if raw.get("is_data_only_repo"):
+            return "только данные, без кода"
+        if raw.get("is_flat_dump"):
+            return "файлы свалены в один каталог"
+        if raw.get("is_data_only_repo") is False or raw.get("is_flat_dump") is False:
+            return "код разложен по каталогам"
+        return ""
+    if key == "dependency_hygiene":
+        manifest = raw.get("dependency_manifest_present")
+        lockfile = raw.get("lockfile_present")
+        if manifest and lockfile:
+            return "манифест и lockfile"
+        if manifest and lockfile is False:
+            return "манифест есть, lockfile нет"
+        if manifest is False:
+            return "манифеста нет"
+        return ""
+    if key == "todo_debt":
+        total = _fmt_number(raw.get("todo_total_count"))
+        if not total:
+            return ""
+        if total == "0":
+            return "нет"
+        old = _fmt_number(raw.get("todo_old_count"))
+        if raw.get("todo_age_available") and old and old != "0":
+            return f"{total}, из них {old} старше полугода"
+        return total
+    return ""
+
+
+def _security_detail(key: str, raw: dict) -> str:
+    critical = _as_number(raw.get("open_critical_count"))
+    high = _as_number(raw.get("open_high_count"))
+    if critical is None and high is None:
+        return ""
+    critical_count = int(critical or 0)
+    high_count = int(high or 0)
+    transitive = int(_as_number(raw.get("transitive_critical_count")) or 0)
+    transitive = min(max(transitive, 0), critical_count)
+    direct = critical_count - transitive
+    if key == "direct":
+        if direct:
+            return f"{direct} × −{SECURITY_DIRECT_CRITICAL_PENALTY}"
+        return "нет"
+    if key == "transitive":
+        if transitive:
+            return f"{transitive} × −{SECURITY_TRANSITIVE_CRITICAL_PENALTY}"
+        return "нет"
+    if key == "high":
+        if high_count:
+            return f"{high_count} × −{SECURITY_HIGH_PENALTY}"
+        return "нет"
+    return ""
+
+
+def _yes_no(value, *, yes: str, no: str) -> str:
+    if value is True:
+        return yes
+    if value is False:
+        return no
     return ""
 
 

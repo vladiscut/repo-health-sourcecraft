@@ -646,15 +646,10 @@ def _build_findings(
 
     scores = submetric_scores or {}
 
-    def impact(submetric_key: str, fallback: int) -> int:
-        # Контракт estimated_score_impact (design.md D1): число баллов
-        # категории, которое вернёт устранение проблемы. Если субметрику
-        # не удалось посчитать (нет ключа) — find_impact вернёт 0, но
-        # такие находки обычно не создаются. Fallback используется,
-        # когда find_impact не может дать ненулевой оценки, например при
-        # полностью недоступных данных.
-        computed = find_impact(submetric_key, DOCS_SUBMETRIC_WEIGHTS, scores)
-        return computed if computed > 0 else fallback
+    def impact(submetric_key: str) -> int:
+        # Баллы категории. В прирост общего Score их переводит
+        # aggregate_scan через вес категории.
+        return find_impact(submetric_key, DOCS_SUBMETRIC_WEIGHTS, scores)
 
     findings: list[Finding] = []
     readme_refs = [metrics.readme_path] if metrics.readme_path else []
@@ -676,7 +671,7 @@ def _build_findings(
                     "инструкциями сборки и тестов."
                 ),
                 evidence_refs=["readme:not-found"],
-                estimated_score_impact=impact("readme_quality", 30),
+                estimated_score_impact=impact("readme_quality"),
             )
         )
     elif metrics.readme_size_chars is None:
@@ -719,7 +714,7 @@ def _build_findings(
                         "запуск, типовые команды."
                     ),
                     evidence_refs=readme_refs,
-                    estimated_score_impact=impact("local_run", 10),
+                    estimated_score_impact=impact("local_run"),
                 )
             )
 
@@ -739,7 +734,7 @@ def _build_findings(
                         "необходимыми зависимостями."
                     ),
                     evidence_refs=readme_refs,
-                    estimated_score_impact=impact("build_test", 10),
+                    estimated_score_impact=impact("build_test"),
                 )
             )
 
@@ -759,7 +754,7 @@ def _build_findings(
                     "Apache-2.0, GPL и т.п.)."
                 ),
                 evidence_refs=["license:not-found"],
-                estimated_score_impact=impact("license", 20),
+                estimated_score_impact=impact("license"),
             )
         )
     elif metrics.license_type_recognized is False:
@@ -778,7 +773,7 @@ def _build_findings(
                     "существенных правок."
                 ),
                 evidence_refs=license_refs,
-                estimated_score_impact=impact("license", 10),
+                estimated_score_impact=impact("license"),
             )
         )
     elif metrics.license_type_recognized is None:
@@ -816,7 +811,7 @@ def _build_findings(
                     "для автоназначения ревьюеров."
                 ),
                 evidence_refs=["contributing:not-found", "codeowners:not-found"],
-                estimated_score_impact=impact("contributing_codeowners", 15),
+                estimated_score_impact=impact("contributing_codeowners"),
             )
         )
 
@@ -836,7 +831,7 @@ def _build_findings(
                     "пользовательской и разработческой документации."
                 ),
                 evidence_refs=["changelog:not-found", "docs-dir:not-found"],
-                estimated_score_impact=impact("structure_extras", 15),
+                estimated_score_impact=impact("structure_extras"),
             )
         )
 

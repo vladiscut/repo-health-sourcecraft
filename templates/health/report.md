@@ -19,11 +19,11 @@
 
 ## Рекомендации
 
-{% for finding in findings %}- **[{{ finding.get_severity_display }}]** {{ finding.title }}{% if finding.category %} ({{ finding.category }}){% endif %}
+{% for finding in findings %}- **[{{ finding.get_severity_display }}]** {{ finding.title }}{% if finding.category %} ({{ finding.get_category_display }}){% endif %}
 {% if finding.detail %}  - {{ finding.detail }}
 {% endif %}{% if finding.recommendation %}  - Действие: {{ finding.recommendation }}
 {% endif %}{% for ref in finding.evidence_refs %}{% if ref|slice:":4" == "http" %}  - {{ ref }}
-{% endif %}{% endfor %}{% if finding.estimated_score_impact %}  - Ожидаемое влияние на Score: +{{ finding.estimated_score_impact }}
+{% endif %}{% endfor %}{% if finding.estimated_score_impact %}  - Ожидаемый прирост Repo Health Score: +{{ finding.estimated_score_impact }}
 {% endif %}
 {% empty %}- Рекомендаций нет — либо скан ещё не считал Score, либо проблем не найдено.
 {% endfor %}

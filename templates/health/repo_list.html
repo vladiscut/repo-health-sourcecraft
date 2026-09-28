@@ -61,7 +61,7 @@
             </td>
             <td class="muted">{{ item.repo.last_scanned_at|date:"d.m.Y H:i"|default:"нет" }}</td>
             <td>
-                {% if item.score %}
+                {% if item.score and item.score.total is not None %}
                 <span class="score {{ item.score.level }}" tabindex="0">
                     {{ item.score.total }}
                     <span class="tip">

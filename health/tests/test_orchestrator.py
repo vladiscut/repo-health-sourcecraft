@@ -88,6 +88,31 @@ class StartRepositoryScanOrderTests(TestCase):
         self.assertLess(code_i, clear_i)
 
 
+class EmptyRepositoryScanTests(TestCase):
+    def test_repo_without_branch_stores_none_not_zero(self):
+        from health.orchestrator import start_repository_scan
+
+        repo = make_repo(default_branch="", is_empty=False)
+        start_repository_scan(repo.pk)
+        repo.refresh_from_db()
+        scan = repo.latest_completed_scan()
+
+        self.assertIsNone(repo.health_score)
+        self.assertIsNotNone(scan)
+        self.assertIsNone(scan.raw["health_score"])
+        self.assertEqual(scan.scores.count(), 6)
+        self.assertTrue(all(row.total is None for row in scan.scores.all()))
+
+    def test_empty_flag_stores_none_not_zero(self):
+        from health.orchestrator import start_repository_scan
+
+        repo = make_repo(default_branch="main", is_empty=True)
+        start_repository_scan(repo.pk)
+        repo.refresh_from_db()
+        self.assertIsNone(repo.health_score)
+        self.assertIsNone(repo.latest_completed_scan().raw["health_score"])
+
+
 class TreeCacheTaskTests(SimpleTestCase):
 
     def test_clear_deletes_cache(self):
