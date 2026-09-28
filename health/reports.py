@@ -4,6 +4,7 @@ from django.template.loader import render_to_string
 
 from health.models import HealthScore, MetricSample, Repository, Scan
 from health.scoring import CATEGORY_LABELS, overall_from_category_totals, present_scores
+from health.security_scan import plain_security_reason
 
 
 SEVERITY_ORDER = {
@@ -22,7 +23,7 @@ def _category_reason(score: HealthScore | None) -> str:
     raw = score.raw_metrics or {}
     reason = raw.get("reason") or raw.get("error") or ""
     if reason:
-        return str(reason)
+        return plain_security_reason(str(reason))
     sample = (
         MetricSample.objects.filter(
             scan_id=score.scan_id,
@@ -34,7 +35,7 @@ def _category_reason(score: HealthScore | None) -> str:
         .first()
     )
     if sample and sample.error_reason:
-        return sample.error_reason
+        return plain_security_reason(sample.error_reason)
     return "нет данных"
 
 

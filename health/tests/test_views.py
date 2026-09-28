@@ -6,7 +6,7 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from health.models import HealthScore, MetricSample, Repository, Scan, UserRepositoryAccess
+from health.models import Finding, HealthScore, MetricSample, Repository, Scan, UserRepositoryAccess
 from health.tests.helpers import grant_access, make_profile, make_repo
 from health.views import PAGE_SIZE, _page_links
 from integrations.sourcecraft import SourceCraftError
@@ -480,6 +480,29 @@ class RepoDetailAndExportTests(TestCase):
                 repository=self.private,
             ).exists()
         )
+
+    def test_http_evidence_is_a_link_on_the_card_and_in_markdown(self):
+        scan = _make_completed_scan(self.public)
+        page_url = "https://sourcecraft.dev/acme/tools/cicd/runs/run-1"
+        Finding.objects.create(
+            scan=scan,
+            category=MetricSample.Category.CI_CD,
+            severity=Finding.Severity.LOW,
+            title="Последний прогон CI успешный",
+            detail="Последний завершённый прогон завершился успешно.",
+            recommendation="",
+            evidence_refs=[page_url, ".sourcecraft/ci.yaml"],
+            estimated_score_impact=0,
+        )
+
+        page = self.client.get(reverse("health:repo-detail", args=["acme", "tools"]))
+        self.assertContains(page, f'href="{page_url}"')
+        self.assertNotContains(page, 'href=".sourcecraft/ci.yaml"')
+
+        md = self.client.get(reverse("health:repo-export", args=["acme", "tools", "md"]))
+        body = md.content.decode("utf-8")
+        self.assertIn(page_url, body)
+        self.assertNotIn(".sourcecraft/ci.yaml", body)
 
     def test_export_markdown_contains_score(self):
         _make_completed_scan(self.public)

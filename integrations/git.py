@@ -205,7 +205,11 @@ class SourceCraftGitClient:
         self.semaphore = semaphore or _get_semaphore()
 
     def _build_clone_url(self, org_slug: str, repo_slug: str) -> str:
-        base = settings.SOURCECRAFT_GIT_BASE_URL.rstrip("/")
+        base = (settings.SOURCECRAFT_GIT_BASE_URL or "").strip().rstrip("/")
+        if not base:
+            raise SourceCraftError(
+                "SOURCECRAFT_GIT_BASE_URL не задан, git clone невозможен"
+            )
         return f"{base}/{org_slug}/{repo_slug}.git"
 
     def clone(
@@ -240,6 +244,7 @@ class SourceCraftGitClient:
                     env=env,
                 )
 
+                repo = None
                 try:
                     repo = Repo.clone_from(url, repo_path, **clone_kwargs)
                 except GitCommandError as exc:
@@ -260,7 +265,8 @@ class SourceCraftGitClient:
                         f"Не удалось клонировать {org_slug}/{repo_slug}: {exc}"
                     ) from exc
                 finally:
-                    repo.close()
+                    if repo is not None:
+                        repo.close()
         finally:
             askpass.unlink(missing_ok=True)
 

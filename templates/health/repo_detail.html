@@ -117,6 +117,11 @@
             <span class="tag">{{ finding.category }} · {{ finding.get_severity_display }}</span>
             <p>{{ finding.detail }}</p>
             {% if finding.recommendation %}<p class="rec">{{ finding.recommendation }}</p>{% endif %}
+            {% for ref in finding.evidence_refs %}
+            {% if ref|slice:":4" == "http" %}
+            <p><a href="{{ ref }}">{{ ref }}</a></p>
+            {% endif %}
+            {% endfor %}
         </li>
         {% endfor %}
     </ul>

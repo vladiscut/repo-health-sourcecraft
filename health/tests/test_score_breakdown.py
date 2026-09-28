@@ -129,6 +129,15 @@ class ScoreBreakdownTests(SimpleTestCase):
         )
         self.assertIn("issues=0", issues[0]["label"])
 
+    def test_legacy_numeric_finished_reason_is_plain(self):
+        parts = explain_category(
+            MetricSample.Category.SECURITY,
+            {"reason": "скан AppSec не FINISHED: 1"},
+            None,
+        )
+        self.assertIn("уже завершён", parts[0]["label"])
+        self.assertNotIn("FINISHED", parts[0]["label"])
+
     def test_rows_keep_six_categories(self):
         class _Score:
             def __init__(self, category, total, raw):

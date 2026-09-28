@@ -193,5 +193,6 @@ button.busy + .loader,
 .finding.warning { border-color: var(--warn); }
 .tag { color: var(--muted); font-size: 12px; margin-left: 8px; }
 .rec { color: var(--ok); }
+.finding a { word-break: break-all; }
 .history { color: var(--muted); }
 code { color: var(--warn); }

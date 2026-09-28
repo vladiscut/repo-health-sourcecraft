@@ -16,6 +16,7 @@ from health.security_scan import (
     DIRECT_CRITICAL_PENALTY,
     HIGH_PENALTY,
     TRANSITIVE_CRITICAL_PENALTY,
+    plain_security_reason,
 )
 
 
@@ -255,7 +256,7 @@ def _reason(raw: dict) -> str:
     lowered = text.lower()
     if "404" in text and "scan" in lowered:
         return "нет скана AppSec"
-    return text
+    return plain_security_reason(text)
 
 
 def _part(label: str, score: int | None = None, share: int | None = None, detail: str = "") -> dict:
