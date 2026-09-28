@@ -1,8 +1,4 @@
-"""Клиент публичного API SourceCraft.
-
-Модуль инкапсулирует HTTP-доступ к API SourceCraft `https://api.sourcecraft.tech`
-Спецификация: `https://api.sourcecraft.tech/sourcecraft.swagger.json`
-"""
+"""Клиент API SourceCraft."""
 
 import logging
 import time
@@ -23,49 +19,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 15.0
 DEFAULT_PAGE_SIZE = 100
 
-# Лимит SourceCraft API. Применяем не его целиком,
-# а с небольшим запасом (RPS_SAFETY_MARGIN)
 DEFAULT_RPS_LIMIT = 100
 RPS_SAFETY_MARGIN = 0.9
 EFFECTIVE_RPS_LIMIT = max(1, int(DEFAULT_RPS_LIMIT * RPS_SAFETY_MARGIN))
 
-# На сколько частей делим каждую секунду при подсчёте лимита в
-# RedisRateLimiter. Подсекундные срезы размазывают
-# бюджет запросов более равномерно внутри секунды.
 RATE_LIMIT_SLICES_PER_SECOND = 10
 
-# Пул соединений HTTP-сессии к SourceCraft
 DEFAULT_HTTP_POOL_SIZE = DEFAULT_RPS_LIMIT
 
-# Пул соединений Redis
 DEFAULT_REDIS_POOL_SIZE = 64
 
-# Коды ответов, при которых имеет смысл повторять запрос.
 RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
 
 
 def _build_retry() -> Retry:
-    """Настраивает urllib3.Retry с честным exponential backoff под 429.
-
-    Бюджет ретраев разведён по типам: `status` (сюда попадает 429/5xx)
-    получает больше попыток, чем `connect`/ `read` (сетевые проблемы)
-
-    `total=None` — иначе общий счётчик срезал бы status-ретраи раньше,
-    чем даст исчерпаться их собственному бюджету.
-
-    `backoff_max` не даёт паузе расти неограниченно при длинной серии
-    429 (иначе экспонента 1 -> 2 -> 4 -> 8 ... улетает в минуты)
-
-    `backoff_jitter` размазывает момент повторной попытки
-    у разных гринлет/воркеров, чтобы они не ретраили синхронно и
-    не создавали новый всплеск ровно к моменту освобождения
-    лимита на стороне SourceCraft.
-
-    `respect_retry_after_header=True` приоритетнее экспоненты: если
-    SourceCraft в ответе 429 явно прислал `Retry-After`, используется
-    именно он, а не расчётный backoff
-    """
-
     kwargs = dict(
         total=None,
         connect=3,
@@ -86,12 +53,6 @@ def _build_retry() -> Retry:
 
 @lru_cache(maxsize=1)
 def _get_rate_limiter(key_prefix: str) -> "RedisRateLimiter":
-    """Singleton для RedisRateLimiter, закэширован ПО (key_prefix, max_calls)
-
-    У каждого ресурса — свой ключ в Redis и свой лимит: лимитер
-    api, raw, appsec НЕ должны делить один и тот же счётчик запросов.
-    """
-
     redis_client = redis.Redis.from_url(
         settings.CELERY_RESULT_BACKEND,
         max_connections=DEFAULT_REDIS_POOL_SIZE,
@@ -143,13 +104,6 @@ class RateLimiter(Protocol):
 
 
 class RedisRateLimiter:
-    """Распределённый лимитер на Redis
-
-    Использует INCR + EXPIRE по ключу `sourcecraft:rl:{slice_index}`, где
-    слайс — не целая секунда, а её `slices_per_second` часть (по
-    умолчанию 100мс)
-    """
-
     def __init__(
         self,
         redis_client: Any,
@@ -181,10 +135,7 @@ class RedisRateLimiter:
 
 
 class SourceCraftAPI:
-    """Общий HTTP-доступ: лимитер, ретраи и пагинация.
-
-    От него наследуются остальные клиенты.
-    """
+    """Общий HTTP-доступ: лимитер, ретраи и пагинация."""
 
     BASE_URL_SETTING_NAME: str = ""
     RATE_LIMIT_KEY_PREFIX: str = ""
@@ -314,12 +265,6 @@ class SourceCraftAPI:
         page_size: int = DEFAULT_PAGE_SIZE,
         start_page_token: str | None = None,
     ) -> Iterator[tuple[list[dict[str, Any]], str | None]]:
-        """Итерирует страницы, отдавая (items, next_page_token).
-
-        Позволяет обрабатывать данные потоково и сохранять курсор
-        `next_page_token` между батчами, не накапливая все страницы в памяти.
-        """
-
         page_token = start_page_token
         seen_tokens: set[str] = set()
         pages_fetched = 0
@@ -391,10 +336,7 @@ class SourceCraftClient(SourceCraftAPI):
         page_size: int = DEFAULT_PAGE_SIZE,
         start_page_token: str | None = None,
     ) -> Iterator[tuple[list[dict[str, Any]], str | None]]:
-        """Итерирует страницы публичных репозиториев батчами.
-
-        Отдаёт `(items, next_page_token)` для каждой страницы
-        """
+        """Страницы публичных репозиториев."""
 
         params: dict[str, Any] = {}
         if filter_query:
@@ -534,9 +476,7 @@ class SourceCraftClient(SourceCraftAPI):
         )
 
     def get_issue_events(self, repo_id: str, issue_id: str | int) -> list[dict[str, Any]]:
-        """Возвращает события/комментарии конкретной задачи.
-
-        Для метрики "время до первого ответа" (категория Issues)"""
+        """Комментарии задачи."""
 
         return list(
             self._paginate(
@@ -610,17 +550,7 @@ class SourceCraftFileClient(SourceCraftAPI):
     def get_file_text(
         self, org_slug: str, repo_slug: str, path: str, revision: str
     ) -> str:
-        """Возвращает контент одного файла репозитория.
-
-        URL: ``{base}/raw/{org}/{repo}/{полный_хеш}/{путь}``.
-        В ``revision`` нужен полный хеш коммита: ветка и короткий хеш
-        дают 404. Параметр ``?token=`` — это короткоживущий токен из
-        интерфейса, не PAT. PAT в query и в ``Authorization`` приватный
-        файл не открывает.
-
-        404 не подменяется пустой строкой/None — поднимается как
-        ``SourceCraftError(status_code=404)``.
-        """
+        """Сырой файл по полному хешу коммита."""
 
         relative_path = path.lstrip("/")
         if not relative_path or not revision:

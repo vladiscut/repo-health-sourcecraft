@@ -1,5 +1,3 @@
-"""Тесты порядка оркестрации скана и задач prime/clear кеша дерева."""
-
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model

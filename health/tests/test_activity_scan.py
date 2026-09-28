@@ -1,5 +1,3 @@
-"""Тесты health/activity_scan.py."""
-
 from datetime import timedelta
 from unittest.mock import Mock, patch
 

@@ -1,5 +1,3 @@
-"""Unit-тесты для :mod:`health.docs_scan`."""
-
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -42,8 +40,6 @@ def _dir(path):
 
 
 class DocsHelpersTests(SimpleTestCase):
-    # -- _has_sourcecraft_ci_config ------------------------------------
-
     def test_sourcecraft_ci_config_found(self):
         tree = _tree(_dir(".sourcecraft"), _file(".sourcecraft/ci.yaml"))
         self.assertTrue(_has_sourcecraft_ci_config(tree))
@@ -58,8 +54,6 @@ class DocsHelpersTests(SimpleTestCase):
     def test_sourcecraft_ci_config_wrong_stem(self):
         tree = _tree(_dir(".sourcecraft"), _file(".sourcecraft/pipeline.yaml"))
         self.assertFalse(_has_sourcecraft_ci_config(tree))
-
-    # -- _detect_ci_config_present -------------------------------------
 
     def test_ci_config_gitlab(self):
         tree = _tree(_file(".gitlab-ci.yml"))
@@ -77,8 +71,6 @@ class DocsHelpersTests(SimpleTestCase):
         tree = _tree(_file("README.md"))
         self.assertFalse(_detect_ci_config_present(tree))
 
-    # -- _find_root_file -----------------------------------------------
-
     def test_find_root_file_only_root(self):
         tree = _tree(_file("docs/readme.md"), _file("README.md"))
         self.assertEqual(_find_root_file(tree, ("readme",)), "README.md")
@@ -91,8 +83,6 @@ class DocsHelpersTests(SimpleTestCase):
         tree = _tree(_file("LICENSE.md"))
         self.assertEqual(_find_root_file(tree, ("license",)), "LICENSE.md")
 
-    # -- _find_file_by_stem --------------------------------------------
-
     def test_find_file_by_stem_in_subdir(self):
         tree = _tree(_file(".github/CONTRIBUTING.md"))
         self.assertEqual(
@@ -104,8 +94,6 @@ class DocsHelpersTests(SimpleTestCase):
         self.assertEqual(
             _find_file_by_stem(tree, ("contributing",)), "docs/CONTRIBUTING.rst"
         )
-
-    # -- базовые проверки дерева ---------------------------------------
 
     def test_has_path(self):
         tree = _tree(_file("README.md"))

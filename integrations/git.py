@@ -1,8 +1,4 @@
-"""Клиент для получения истории коммитов SourceCraft через git-протокол.
-
-Лимитируем не rps, а количество ОДНОВРЕМЕННЫХ клонов (RedisCloneSemaphore),
-с TTL-арендой слота на случай падения воркера посреди клонирования.
-"""
+"""Git-доступ к репозиториям SourceCraft."""
 
 import logging
 import os
@@ -25,21 +21,14 @@ from integrations.sourcecraft import SourceCraftError
 
 logger = logging.getLogger(__name__)
 
-# Сколько клонов может идти одновременно на весь сервис. git clone —
-# тяжёлая операция (диск, сеть, CPU на распаковку),
-# поэтому лимитируем именно конкурентность, а не rps.
 DEFAULT_MAX_CONCURRENT_CLONES = getattr(
     settings, "SOURCECRAFT_GIT_MAX_CONCURRENT_CLONES", 4
 )
 
-# Сколько ждём один git clone, прежде чем считать его ошибкой.
 DEFAULT_CLONE_TIMEOUT_SECONDS = getattr(
     settings, "SOURCECRAFT_GIT_CLONE_TIMEOUT_SECONDS", 180  # 3 мин
 )
 
-# TTL "аренды" слота в семафоре. Должен быть заметно больше таймаута
-# клонирования — иначе живой процесс рискует потерять слот раньше,
-# чем гарантированно мёртвый успеет протухнуть.
 DEFAULT_SEMAPHORE_LEASE_SECONDS = getattr(
     settings,
     "SOURCECRAFT_GIT_SEMAPHORE_LEASE_SECONDS",
@@ -50,14 +39,6 @@ DEFAULT_REDIS_POOL_SIZE = 16
 
 
 class RedisCloneSemaphore:
-    """Ограничивает число одновременных git clone через Redis ZSET.
-
-    Каждый держатель слота — член ZSET, score = время захвата. Перед
-    каждой попыткой захвата просроченные (старше `lease_seconds`) члены
-    вычищаются — это защита от "утечки" слота, если воркер, державший
-    его, упал и не успел вызвать release().
-    """
-
     def __init__(
         self,
         redis_client: "redis.Redis",
@@ -141,12 +122,6 @@ def _get_semaphore() -> RedisCloneSemaphore:
 
 
 def _make_askpass_script() -> Path:
-    """Создаёт временный исполняемый askpass-скрипт.
-
-    Скрипт читает GIT_USER / GIT_TOKEN из окружения самого процесса git,
-    поэтому токен не попадает ни в argv, ни в лог команды.
-    """
-
     content = (
         "#!/bin/sh\n"
         'case "$1" in\n'
@@ -183,14 +158,6 @@ def _build_git_env(token: str, user: str) -> tuple[dict[str, str], Path]:
 
 
 class SourceCraftGitClient:
-    """Клиент git-доступа к репозиториям SourceCraft.
-
-    По духу — аналог `integrations.sourcecraft.SourceCraftAPI`: токен по
-    умолчанию из настроек, единообразная ошибка `SourceCraftError`, общий
-    лимитер ресурса (здесь — конкурентность клонов, а не rps), таймаут на
-    операцию.
-    """
-
     _BLAME_AUTHOR_TIME_RE = re.compile(r"^author-time (\d+)$")
     _MARKER_RE = re.compile(r"TODO|FIXME|FIX")
 
@@ -298,12 +265,6 @@ class SourceCraftGitClient:
 
     @staticmethod
     def scan_markers(repo_path: str) -> list[str]:
-        """Возвращает строки с маркерами TODO/FIXME/FIX через `git grep`.
-
-        Формат строки: `<путь>:<номер>:<содержимое>`. Метод статический:
-        работает по уже существующему локальному клону, без сети.
-        """
-
         keywords = "|".join(("TODO", "FIXME", "FIX"))
         repo: Repo | None = None
         try:
@@ -327,13 +288,6 @@ class SourceCraftGitClient:
 
     @staticmethod
     def scan_marker_positions(repo_path: str) -> list[tuple[str, int, str]]:
-        """Возвращает позиции маркеров TODO/FIXME/FIX через `git grep`.
-
-        Каждый элемент — кортеж `(path, line_no, marker)`, где `marker`
-        равен `TODO`, `FIXME` или `FIX`. Работает по уже существующему
-        локальному клону, без сети.
-        """
-
         results: list[tuple[str, int, str]] = []
         for raw_line in SourceCraftGitClient.scan_markers(repo_path):
             # Формат `git grep -n`: `<путь>:<номер>:<содержимое>`.
@@ -356,14 +310,6 @@ class SourceCraftGitClient:
         scan_id: int,
         branch: str,
     ) -> dict[tuple[str, int], tuple[str, datetime]]:
-        """Сопоставляет позиции маркеров TODO/FIXME/FIX с их давностью.
-
-        Для каждого маркера в клоне скана возвращает ключ
-        `(path, line_no)` со значением `(marker, committed_datetime)`,
-        где дата берётся через `git blame`
-        Работает по уже существующему локальному клону, без сети.
-        """
-
         repo_path = get_scan_repo_dir(scan_id)
         positions = SourceCraftGitClient.scan_marker_positions(str(repo_path))
         if not positions:
@@ -391,19 +337,6 @@ class SourceCraftGitClient:
         branch: str,
         line_specs: dict[str, list[int]],
     ) -> dict[str, dict[int, datetime]]:
-        """Для набора (файл -> список номеров строк) возвращает дату
-        коммита, последним менявшего каждую строку (`git blame`).
-
-        Используется health.code_health_scan для определения давности
-        TODO/FIXME по Git-истории. Работает по уже существующему
-        локальному клону, повторно НЕ клонирует.
-
-        Файл, которого нет / который не удалось разобрать, просто
-        отсутствует в результирующем словаре — вызывающий код трактует
-        это как "давность для этих строк неизвестна", не как ошибку
-        всего вызова.
-        """
-
         if not line_specs:
             return {}
 
@@ -445,11 +378,6 @@ class SourceCraftGitClient:
         path: str,
         lines: list[int],
     ) -> dict[int, datetime]:
-        """Разбирает `git blame --porcelain` за один вызов на файл и
-        возвращает {номер_строки: дата_коммита} только для запрошенных
-        строк из `lines`.
-        """
-
         wanted = set(lines)
         line_ranges: list[str] = []
         for line_no in sorted(wanted):

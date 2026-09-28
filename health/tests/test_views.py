@@ -293,6 +293,10 @@ class RepoDetailAndExportTests(TestCase):
         self.assertContains(response, "3200 символов")
         self.assertContains(response, "Лицензия")
         self.assertContains(response, "тип распознан")
+        self.assertContains(response, '<details class="bar-cat">')
+        self.assertNotContains(response, "bar-cat\" open")
+        self.assertContains(response, '<span class="bar-head">')
+        self.assertNotContains(response, '<summary class="bar-head">')
 
         Scan.objects.create(
             repository=self.public,

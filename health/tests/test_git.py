@@ -1,5 +1,3 @@
-"""Unit-тесты для :mod:`integrations.git` (только чтение локального клона)."""
-
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory

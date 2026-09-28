@@ -1,12 +1,4 @@
-"""Прогон анализа категории Security для одного Scan.
-
-Категория считается только в личном контуре: токен берётся из
-Profile.sourcecraft_pat пользователя Scan.triggered_by_user.
-Без токена, без скана AppSec или при 401/403/404 пишется HealthScore
-с total=None. 429 и 5xx не глотаются — их ретраит Celery.
-
-Модуль не меняет Scan.status и не считает итоговый Repo Health Score.
-"""
+"""Категория безопасности."""
 
 import logging
 from dataclasses import dataclass
@@ -84,12 +76,6 @@ class _GroupHit:
 
 @dataclass
 class _SecurityMetrics:
-    """Сырые метрики категории Security для score_security_category().
-
-    Суммарные штрафы (в баллах 0-100) по открытым группам каждой
-    критичности. Чистая структура данных, без обращений к БД/API.
-    """
-
     direct_penalty_sum: int
     transitive_penalty_sum: int
     high_penalty_sum: int
@@ -155,7 +141,6 @@ def _save_unavailable(scan: Scan, reason: str) -> HealthScore:
                 value=None,
                 is_available=False,
                 error_reason=reason[:255],
-                # Подтверждающего артефакта нет — ссылку очищаем явно.
                 source_reference="",
             ),
         )
@@ -317,8 +302,6 @@ def _save_scored(scan: Scan, hits: list[_GroupHit], scan_uuid: str) -> HealthSco
     critical_count = sum(1 for hit in hits if hit.severity == "critical")
     high_count = sum(1 for hit in hits if hit.severity == "high")
 
-    # Первая открытая группа соответствующей критичности — как ссылка-
-    # подтверждение метрики. Если групп нет, ссылку не пишем.
     critical_ref = next(
         (hit.url for hit in hits if hit.severity == "critical" and hit.url),
         "",

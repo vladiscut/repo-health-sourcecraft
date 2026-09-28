@@ -1,19 +1,4 @@
-"""Прогон анализа категории "Documentation & Best Practices" для Scan.
-
-Модуль сфокусирован только на категории Docs — он не трогает
-Scan.status итогового скана и не пересчитывает общий Repo Health Score.
-
-Он отвечает за:
-
-1. Получение дерева файлов репозитория через SourceCraftClient.
-2. Чтение содержимого ключевых файлов (README, LICENSE) по прямому URL
-   репозитория (в SourceCraftClient нет метода чтения файла).
-3. Вычисление сырых метрик категории Docs и запись их в MetricSample.
-4. Расчёт балла категории 0-100 (или None при отсутствии данных) —
-   делегирован в health.scoring.score_docs_category, здесь модуль только
-   собирает _DocsMetrics и не занимается арифметикой скоринга.
-5. Формирование приоритизированных Finding по обнаруженным проблемам.
-"""
+"""Категория документации."""
 
 import logging
 import re
@@ -52,25 +37,13 @@ logger = logging.getLogger(__name__)
 
 CATEGORY = MetricSample.Category.DOCS
 
-# Номинальный вес категории по ТЗ
-# Финальная перенормировка между всеми 6 категориями — задача
-# health.orchestrator.aggregate_scan.
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
 
 README_MAX_CHARS = 200_000
 
-# Конвенция SourceCraft для CI: каталог `.sourcecraft/` с файлом вида
-# ci.yaml/ci.yml внутри (см. пример дерева репозитория на платформе).
-# Это ОСНОВНАЯ конвенция для проектов SourceCraft — импорт с внешних
-# платформ не требуется по ТЗ, поэтому её приоритизируем, но
-# GitHub/GitLab-конвенции оставляем как доп. сигналы на случай, если
-# конфиг остался в истории репозитория.
 SOURCECRAFT_CI_DIR = ".sourcecraft"
 SOURCECRAFT_CI_FILENAME_STEMS = ("ci",)
 
-# Ключевые слова/заголовки, указывающие на инструкцию локального запуска.
-# команды популярных экосистем (pip/npm/yarn/pnpm/poetry/go/cargo/make)
-# и упоминания docker/compose
 LOCAL_RUN_PATTERNS = [
     r"quick\s*start",
     r"getting\s*started",
@@ -123,7 +96,6 @@ LOCAL_RUN_PATTERNS = [
     r"инструкция\s+по\s+запуску",
 ]
 
-# Ключевые слова/заголовки, указывающие на инструкции по сборке и тестам.
 BUILD_TEST_PATTERNS = [
     r"\bbuild(ing)?\b",
     r"\bcompil(e|ing|ation)\b",
@@ -169,7 +141,6 @@ BUILD_TEST_PATTERNS = [
     r"проверка\s+кода",
 ]
 
-# Ключевые слова/заголовки, указывающие на описание структуры проекта.
 STRUCTURE_PATTERNS = [
     r"структур[аеу]",
     r"project\s+structure",
@@ -198,7 +169,6 @@ STRUCTURE_PATTERNS = [
     r"дерево\s+(каталогов|директорий)",
 ]
 
-# Распознавание типа лицензии по содержимому файла LICENSE.
 LICENSE_PATTERNS = [
     ("MIT", r"MIT\s+License"),
     ("Apache-2.0", r"Apache\s+License,?\s+Version\s+2\.0"),
@@ -230,8 +200,6 @@ LICENSE_PATTERNS = [
     ("Proprietary", r"[Вв]се\s+права\s+защищены"),
 ]
 
-# Стемы имён файлов (без расширения, без учёта регистра), которые ищем
-# не только в корне, но и в типовых подпапках (.github/, docs/, .gitlab/)
 CONTRIBUTING_STEMS = (
     "contributing",
     "contribute",
@@ -248,8 +216,6 @@ CONTRIBUTING_STEMS = (
 
 @dataclass
 class _DocsMetrics:
-    """Промежуточный результат вычислений — перед сохранением в БД."""
-
     readme_present: bool | None = None
     readme_path: str | None = None
     readme_size_chars: int | None = None
@@ -273,12 +239,6 @@ class _DocsMetrics:
 
 
 def _has_sourcecraft_ci_config(tree: dict[str, dict[str, Any]]) -> bool:
-    """Ищет CI-конфиг SourceCraft: файл `ci.<ext>` внутри `.sourcecraft/`.
-
-    Не привязываемся к конкретному расширению (.yaml/.yml/.json) —
-    проверяем стем имени файла.
-    """
-
     prefix = SOURCECRAFT_CI_DIR + "/"
     for path_lower, entry in tree.items():
         if not path_lower.startswith(prefix):
@@ -296,15 +256,6 @@ def _has_sourcecraft_ci_config(tree: dict[str, dict[str, Any]]) -> bool:
 
 
 def _detect_ci_config_present(tree: dict[str, dict[str, Any]]) -> bool:
-    """Определяет наличие CI-конфига по всем известным конвенциям.
-
-    Порядок проверки: сначала родная конвенция SourceCraft
-    (`.sourcecraft/ci.yaml`), затем GitHub Actions / GitLab CI — на
-    случай, если в репозитории остались файлы истории миграции с
-    другой платформы, затем — legacy-эвристика по имени файла
-    `sourcecraft-ci*`
-    """
-
     if _has_sourcecraft_ci_config(tree):
         return True
 
@@ -331,12 +282,6 @@ def _collect_tree(
     repo: Repository,
     scan_id: int,
 ) -> dict[str, dict[str, Any]] | None:
-    """Возвращает нормализованное дерево репозитория или None при ошибке.
-
-    Ключ — путь в нижнем регистре, значение — исходная запись дерева
-    (name, path, type).
-    """
-
     try:
         tree = get_repository_tree_cached(client, repo)
     except SourceCraftError as exc:
@@ -357,14 +302,6 @@ def _read_file_safe(
     path: str,
     file_client: SourceCraftFileClient | None
 ) -> tuple[str | None, str]:
-    """Читает содержимое файла из клонированной рабочей копии скана.
-
-    Работает по уже существующему локальному клону (см.
-    integrations.git.get_scan_repo_dir), без сетевых вызовов файлового
-    API SourceCraft. Отсутствие файла или ошибка чтения возвращаются
-    вторым элементом кортежа как причина недоступности.
-    """
-
     if repo.visibility == Repository.VisibilityType.PUBLIC:
         try:
             content = file_client.get_file_text(
@@ -401,8 +338,6 @@ def _find_root_file(
     prefixes: tuple[str, ...],
     types: tuple[str, ...] = ("file", "executable"),
 ) -> str | None:
-    """Ищет корневой файл по префиксу имени в нормализованном дереве."""
-
     for path_lower, entry in tree.items():
         if "/" in path_lower:
             continue
@@ -419,11 +354,6 @@ def _find_file_by_stem(
     stems: tuple[str, ...],
     types: tuple[str, ...] = ("file", "executable"),
 ) -> str | None:
-    """Ищет файл по имени без расширения в любом месте
-    дерева — используется для файлов вроде CONTRIBUTING, которые по
-    конвенции нередко лежат в .github/ или docs/
-    """
-
     for path_lower, entry in tree.items():
         entry_type = str(entry.get("type") or "").lower()
         if types and entry_type not in types:
@@ -498,9 +428,6 @@ def _compute_metrics(
             )
             metrics.license_type_recognized = recognized
 
-    # Документы и шаблоны по дереву
-    # CONTRIBUTING ищем не только в корне, но и в .github/, docs/ —
-    # по конвенции он нередко лежит именно там.
     metrics.contributing_present = _find_file_by_stem(
         tree, CONTRIBUTING_STEMS
     ) is not None
@@ -546,8 +473,6 @@ def _save_metric_samples(scan: Scan, metrics: _DocsMetrics) -> None:
         reason: str = "",
         source_reference: str = "",
     ) -> None:
-        # Пустые/пробельные ссылки не сохраняем, чтобы поле не выглядело
-        # заполненным, когда подтверждающего артефакта фактически нет.
         reference = (source_reference or "").strip()
         MetricSample.objects.update_or_create(
             scan=scan,
@@ -568,7 +493,6 @@ def _save_metric_samples(scan: Scan, metrics: _DocsMetrics) -> None:
         "bool",
         is_available=metrics.readme_present is not None,
         reason="" if metrics.readme_present is not None else "нет данных",
-        # Подтверждение — найденный файл README (если он есть).
         source_reference=metrics.readme_path or "",
     )
     _save(
@@ -624,8 +548,6 @@ def _save_metric_samples(scan: Scan, metrics: _DocsMetrics) -> None:
         ("docs_pr_template_present", metrics.pr_template_present),
         ("docs_ci_config_present", metrics.ci_config_present),
     ):
-        # Для license_present есть конкретный путь; для остальных флагов
-        # отдельные пути не сохраняются в _DocsMetrics — ссылку не выдумываем.
         reference = metrics.license_path if key == "docs_license_present" else ""
         _save(key, value, "bool", source_reference=reference or "")
 
@@ -647,8 +569,6 @@ def _build_findings(
     scores = submetric_scores or {}
 
     def impact(submetric_key: str) -> int:
-        # Баллы категории. В прирост общего Score их переводит
-        # aggregate_scan через вес категории.
         return find_impact(submetric_key, DOCS_SUBMETRIC_WEIGHTS, scores)
 
     findings: list[Finding] = []
@@ -675,9 +595,6 @@ def _build_findings(
             )
         )
     elif metrics.readme_size_chars is None:
-        # README есть, но прочитать его не удалось — это отдельная от
-        # "README отсутствует" ситуация, и её тоже нужно объяснить
-        # пользователю, а не молча занижать/задирать оценку.
         findings.append(
             Finding(
                 scan=scan,
@@ -777,7 +694,6 @@ def _build_findings(
             )
         )
     elif metrics.license_type_recognized is None:
-        # Файл лицензии найден, но прочитать его не удалось.
         findings.append(
             Finding(
                 scan=scan,
@@ -866,11 +782,8 @@ def run_docs_scan(
     client: SourceCraftClient,
     file_client: SourceCraftFileClient | None,
 ) -> HealthScore:
-    """Собирает данные по документации репозитория и сохраняет результат."""
-
     repository = scan.repository
 
-    # --- Сетевая часть: без открытой транзакции ---
     tree = _collect_tree(client, repository, scan.id)
     if tree is None:
         with transaction.atomic():
@@ -882,8 +795,6 @@ def run_docs_scan(
                     value=None,
                     is_available=False,
                     error_reason="не удалось получить дерево файлов",
-                    # Подтверждающего артефакта нет — ссылку очищаем явно,
-                    # чтобы не унаследовать её от предыдущего успешного прогона.
                     source_reference="",
                 ),
             )
@@ -903,10 +814,8 @@ def run_docs_scan(
 
     metrics = _compute_metrics(scan.id, repository, tree, file_client)
 
-    # --- Чистая арифметика: без сети и без БД ---
     score, data_completeness, submetric_scores = score_docs_category(metrics)
 
-    # --- Запись в БД — единственное место с открытой транзакцией ---
     with transaction.atomic():
         _save_metric_samples(scan, metrics)
         _build_findings(scan, metrics, score, submetric_scores)

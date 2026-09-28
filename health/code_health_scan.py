@@ -1,41 +1,4 @@
-"""Прогон анализа категории "Состояние кода и технический долг"
-(Code health / Maintainability) для Scan.
-
-Модуль сфокусирован только на категории Code health — он не трогает
-Scan.status итогового скана и не пересчитывает общий Repo Health Score.
-
-Он отвечает за:
-
-1. Получение дерева файлов репозитория через SourceCraftClient (кэш
-   между параллельными категориями — health.tree_cache, см. его
-   docstring: Docs и Code health читают одно и то же дерево одного и
-   того же Scan почти одновременно).
-2. Структурные признаки по именам в дереве, БЕЗ git clone:
-   манифесты зависимостей/lockfile, тесты, линтеры/форматтеры,
-   закоммиченные зависимости/сборки/бинарный мусор, "свалка ли это
-   файлов", "data-only ли это репозиторий".
-3. Поиск TODO/FIXME (и т.п.) по содержимому не более
-   CODE_HEALTH_MAX_TODO_SCAN_FILES файлов — чтением файлов из уже
-   существующего git-клона скана (get_scan_repo_dir), без сетевых
-   вызовов файлового API SourceCraft. Без клона (скан по расписанию)
-   todo-метрики помечаются недоступными, а веса категории
-   перенормируются по оставшимся под-метрикам.
-4. Давность найденных TODO по Git-истории — ТОЛЬКО при
-   include_todo_age=True (одиночный ручной скан, см. ниже), тем же
-   принципом, что include_commits в activity_scan.py: git clone —
-   тяжёлая операция, при массовом плановом скане тысяч публичных
-   репозиториев её не делаем, TODO просто считаются без давности.
-5. Расчёт балла категории 0-100 — делегирован
-   health.scoring.score_code_health_category, здесь модуль только
-   собирает _CodeHealthMetrics и не занимается арифметикой скоринга.
-6. Формирование приоритизированных Finding по обнаруженным проблемам.
-
-Важно (см. также комментарий в activity_scan.py про очередь
-`analysis.git`): если include_todo_age=True, эта задача тоже делает
-блокирующий git clone (через integrations.git.SourceCraftGitClient) —
-её тоже нужно роутить на воркер с prefork-пулом, а не на gevent-пул
-analysis.scheduled, по тем же причинам, что и Activity.
-"""
+"""Категория «состояние кода»."""
 
 import logging
 import re
@@ -78,37 +41,19 @@ logger = logging.getLogger(__name__)
 
 CATEGORY = MetricSample.Category.CODE_HEALTH
 
-# Номинальный вес категории по ТЗ — единственный источник: health.scoring.
-# Финальная перенормировка между всеми 6 категориями — задача
-# health.orchestrator.aggregate_scan.
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
 
 
 def _weights_for(include_todo_age: bool) -> dict[str, float]:
-    """Выбирает набор весов под-метрик Code health по флагу давности TODO.
-
-    Когда давность TODO считается (одиночный ручной скан), todo_debt
-    получает полноценный вес; когда нет (массовый плановый скан,
-    публичный репозиторий) — его вклад перераспределяется на остальные
-    под-метрики через CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE.
-    Тот же выбор весов обязан использоваться и в find_impact(), чтобы
-    estimated_score_impact совпадал с фактическим расчётом балла.
-    """
     return (
         CODE_HEALTH_SUBMETRIC_WEIGHTS
         if include_todo_age
         else CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE
     )
 
-# Не больше 30 текстовых файлов сканируем на TODO/FIXME — по ТЗ.
 CODE_HEALTH_MAX_TODO_SCAN_FILES = 30
 CODE_HEALTH_FILE_MAX_CHARS = 50_000
 
-# --------------------------------------------------------------------
-# Манифесты зависимостей / lockfile — по точному имени файла в любом
-# месте дерева (в отличие от docs_scan, где README/LICENSE ищутся
-# только в корне: манифесты бывают в подпапках монорепо).
-# --------------------------------------------------------------------
 DEPENDENCY_MANIFEST_NAMES = frozenset({
     "package.json", "pyproject.toml", "setup.py", "setup.cfg",
     "requirements.txt", "pipfile", "go.mod", "cargo.toml", "gemfile",
@@ -122,8 +67,6 @@ LOCKFILE_NAMES = frozenset({
     "gemfile.lock", "mix.lock", "pubspec.lock",
 })
 
-# Тесты: по имени каталога ИЛИ по паттерну имени файла — оба сигнала
-# распространены в разных экосистемах.
 TEST_DIR_NAMES = frozenset({"tests", "test", "__tests__", "spec", "specs"})
 TEST_FILE_PATTERNS = [
     re.compile(r"(^|/)test_[^/]+\.py$"),
@@ -143,18 +86,15 @@ LINT_CONFIG_NAMES = frozenset({
     ".rubocop.yml", ".stylelintrc", ".stylelintrc.json",
 })
 
-# Каталоги с закоммиченными зависимостями сторонних пакетов.
 VENDORED_DIR_NAMES = frozenset({
     "node_modules", "vendor", "venv", ".venv", "env", "site-packages",
     "bower_components", ".gradle", "__pycache__", ".tox", "pods",
 })
 
-# Каталоги сборки / сгенерированных артефактов.
 GENERATED_DIR_NAMES = frozenset({
     "dist", "build", "out", "target", ".next", ".nuxt", ".cache", "coverage",
 })
 
-# Расширения бинарных/скомпилированных файлов — "мусор в дереве".
 BINARY_JUNK_SUFFIXES = (
     ".pyc", ".pyo", ".class", ".o", ".obj", ".so", ".dll", ".dylib",
     ".exe", ".jar", ".war", ".ear", ".min.js", ".min.css", ".map",
@@ -168,15 +108,11 @@ SOURCE_CODE_SUFFIXES = (
     ".scala", ".m", ".sh", ".pl", ".lua", ".ex", ".exs", ".dart", ".vue",
 )
 
-# Признаки TODO/FIXME/HACK/XXX — только как отдельное слово, чтобы не
-# ловить, например, "TODOLIST" как переменную.
 TODO_MARKER_RE = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b", re.IGNORECASE)
 
 
 @dataclass
 class _CodeHealthMetrics:
-    """Промежуточный результат вычислений — перед сохранением в БД."""
-
     dependency_manifest_present: bool | None = None
     lockfile_present: bool | None = None
     tests_present: bool | None = None
@@ -198,10 +134,6 @@ class _CodeHealthMetrics:
     todo_age_available: bool = False
     todo_age_error: str = ""
 
-    # Доступен ли git-клон скана. От него зависят todo_* метрики:
-    # без клона их нельзя посчитать, и они помечаются недоступными,
-    # а веса категории перенормируются (см. score_code_health_category
-    # и weighted_submetric_score).
     clone_available: bool = False
 
     fetch_errors: dict[str, str] = field(default_factory=dict)
@@ -263,18 +195,6 @@ def _detect_binary_junk(tree: dict[str, dict[str, Any]]) -> bool:
 def _classify_structure(
     tree: dict[str, dict[str, Any]],
 ) -> tuple[bool, bool, int, int]:
-    """Возвращает (is_data_only, is_flat_dump, source_files_count, total_files_count).
-
-    is_data_only: файлов вообще нет исходного кода, зато есть
-    data-файлы (CSV/JSON/...) — "репозиторий, который состоит только
-    из данных и не является кодом" по ТЗ.
-
-    is_flat_dump: много файлов лежит прямо в корне без вложенных
-    каталогов — эвристика "свалки", а не структурированного проекта.
-    Порог осознанно грубый: у маленьких утилитарных репозиториев
-    (одиночный скрипт) он не должен срабатывать.
-    """
-
     files = [
         (p, e) for p, e in tree.items()
         if str(e.get("type") or "").lower() in ("file", "executable")
@@ -297,9 +217,6 @@ def _classify_structure(
     top_level_dirs = {
         p.split("/", 1)[0] for p, e in tree.items() if "/" in p
     }
-    # "Свалка": много файлов прямо в корне и почти нет подкаталогов —
-    # для маленьких репозиториев (<= 15 файлов) не считаем это
-    # проблемой, там плоская структура — норма.
     is_flat_dump = (
         total_files_count > 15
         and root_files >= max(10, int(total_files_count * 0.6))
@@ -310,11 +227,6 @@ def _classify_structure(
 
 
 def _select_todo_candidate_files(tree: dict[str, dict[str, Any]]) -> list[str]:
-    """Выбирает до CODE_HEALTH_MAX_TODO_SCAN_FILES файлов для поиска
-    TODO/FIXME: только исходный код, вне вендоренных/сгенерированных
-    каталогов — читать содержимое node_modules/dist бессмысленно и дорого
-    """
-
     candidates: list[str] = []
     for path_lower, entry in tree.items():
         entry_type = str(entry.get("type") or "").lower()
@@ -336,11 +248,6 @@ def _scan_todos(
     scan_id: int,
     file_client: SourceCraftFileClient,
 ) -> tuple[list[tuple[str, int]], str]:
-    """Читает содержимое кандидатов и возвращает список (path, line_no)
-    строк с TODO/FIXME/HACK/XXX, плюс общую ошибку сканирования (если
-    ни один файл прочитать не удалось — например, нет commit_sha).
-    """
-
     if not repo.scan_commit_sha:
         return [], "нет хеша последнего коммита"
 
@@ -446,9 +353,6 @@ def _compute_metrics(
 
     candidate_paths = _select_todo_candidate_files(tree)
     repo_dir = Path(get_scan_repo_dir(scan_id))
-    # Клон считается доступным, только если каталог существует и непуст:
-    # get_scan_repo_dir() создаёт пустой каталог при первом вызове, поэтому
-    # одного is_dir() недостаточно (скан по расписанию клон не делает).
     metrics.clone_available = repo_dir.is_dir() and any(repo_dir.iterdir())
 
     occurrences, scan_error = _scan_todos(
@@ -459,10 +363,8 @@ def _compute_metrics(
     metrics.todo_total_count = None if scan_error else len(occurrences)
 
     if scan_error:
-        # Скан TODO не удался (в т.ч. нет клона) — давность тоже недоступна.
         metrics.todo_age_error = scan_error
     elif not occurrences:
-        # Считать нечего, но и ошибки нет — 0 старых из 0.
         metrics.todo_old_count = 0
         metrics.todo_age_available = True
     else:
@@ -491,8 +393,6 @@ def _save_metric_samples(scan: Scan, metrics: _CodeHealthMetrics) -> None:
         reason: str = "",
         source_reference: str = "",
     ) -> None:
-        # Пустые/пробельные ссылки не сохраняем, чтобы поле не выглядело
-        # заполненным, когда подтверждающего артефакта фактически нет.
         reference = (source_reference or "").strip()
         MetricSample.objects.update_or_create(
             scan=scan,
@@ -507,8 +407,6 @@ def _save_metric_samples(scan: Scan, metrics: _CodeHealthMetrics) -> None:
             ),
         )
 
-    # Ссылка на сам репозиторий: подтверждает метрики, которые считаются
-    # по дереву/истории всего репозитория (агрегаты и TODO-скан).
     repo_url = (scan.repository.url or "").strip()
 
     for key, value in (
@@ -522,8 +420,6 @@ def _save_metric_samples(scan: Scan, metrics: _CodeHealthMetrics) -> None:
         ("code_health_is_data_only_repo", metrics.is_data_only_repo),
         ("code_health_is_flat_dump", metrics.is_flat_dump),
     ):
-        # _CodeHealthMetrics не хранит конкретный путь найденного файла,
-        # поэтому здесь ссылку не выдумываем: это флаги по всему дереву.
         _save(
             key, value, "bool",
             is_available=value is not None,
@@ -549,14 +445,12 @@ def _save_metric_samples(scan: Scan, metrics: _CodeHealthMetrics) -> None:
         "code_health_todo_total_count", metrics.todo_total_count, "comments",
         is_available=metrics.todo_total_count is not None,
         reason=metrics.todo_scan_error,
-        # TODO найдены в файлах рабочей копии репозитория.
         source_reference=repo_url if metrics.todo_total_count is not None else "",
     )
     _save(
         "code_health_todo_old_count", metrics.todo_old_count, "comments",
         is_available=metrics.todo_age_available,
         reason=metrics.todo_age_error,
-        # Давность TODO подтверждается историей коммитов того же репозитория.
         source_reference=repo_url if metrics.todo_age_available else "",
     )
 
@@ -578,8 +472,6 @@ def _build_findings(
 
     findings: list[Finding] = []
     submetric_scores = submetric_scores or {}
-    # Веса под-метрик должны совпадать с теми, по которым посчитан балл
-    # категории, иначе estimated_score_impact разойдётся с реальностью.
     weights = _weights_for(include_todo_age)
 
     if metrics.tests_present is False:
@@ -748,11 +640,8 @@ def run_code_health_scan(
     include_todo_age: bool,
     file_client: SourceCraftFileClient,
 ) -> HealthScore:
-    """Собирает данные по состоянию кода репозитория и сохраняет результат."""
-
     repository = scan.repository
 
-    # --- Сетевая часть: без открытой транзакции ---
     try:
         tree_list = get_repository_tree_cached(client, repository)
     except SourceCraftError as exc:
@@ -766,7 +655,6 @@ def run_code_health_scan(
                     value=None,
                     is_available=False,
                     error_reason="не удалось получить дерево файлов",
-                    # Подтверждающего артефакта нет — ссылку очищаем явно.
                     source_reference="",
                 ),
             )
@@ -794,14 +682,10 @@ def run_code_health_scan(
         git_client, repository, tree, include_todo_age, scan.id, file_client
     )
 
-    # --- Чистая арифметика: без сети и без БД ---
-    # include_todo_age определяет набор весов под-метрик: он должен быть
-    # одинаковым и для балла категории, и для estimated_score_impact.
     score, data_completeness, submetric_scores = score_code_health_category(
         metrics, include_todo_age=include_todo_age
     )
 
-    # --- Запись в БД — единственное место с открытой транзакцией ---
     with transaction.atomic():
         _save_metric_samples(scan, metrics)
         _build_findings(
@@ -847,8 +731,6 @@ def run(scan_id: int) -> int:
         "triggered_by_user", "repository"
     ).get(pk=scan_id)
 
-    # Давность TODO по git-истории требует git clone,
-    # поэтому считается только при одиночном ручном скане
     include_todo_age = False
 
     token = None

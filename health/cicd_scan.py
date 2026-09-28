@@ -1,11 +1,4 @@
-"""Прогон анализа категории CI/CD для одного Scan.
-
-Категория считается только в личном контуре: токен берётся из
-Profile.sourcecraft_pat пользователя Scan.triggered_by_user.
-Без токена пишется HealthScore с total=None и запросов к CI нет.
-
-Модуль не меняет Scan.status и не считает итоговый Repo Health Score.
-"""
+"""Категория CI/CD."""
 
 import logging
 import statistics
@@ -34,9 +27,6 @@ CATEGORY = MetricSample.Category.CI_CD
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
 
 CI_CONFIG_PATH = ".sourcecraft/ci.yaml"
-
-# CICD_SUBMETRIC_WEIGHTS импортируется из health.scoring, чтобы он был
-# частью единой SUBMETRIC_WEIGHTS_BY_CATEGORY без циклического импорта.
 
 DURATION_WORST_MINUTES = 60.0
 DURATION_BEST_MINUTES = 5.0
@@ -80,7 +70,6 @@ def _save_unavailable(scan: Scan, reason: str) -> HealthScore:
                 value=None,
                 is_available=False,
                 error_reason=reason[:255],
-                # Подтверждающего артефакта нет — ссылку очищаем явно.
                 source_reference="",
             ),
         )
@@ -106,8 +95,6 @@ def _save_metric(
     reason: str = "",
     source_reference: str = "",
 ) -> None:
-    # source_reference необязателен: пустые/пробельные значения не сохраняем
-    # как «ссылку», иначе поле будет выглядеть заполненным, но бесполезным.
     reference = (source_reference or "").strip()
     MetricSample.objects.update_or_create(
         scan=scan,
@@ -260,7 +247,6 @@ def _score(
     config_present: bool,
 ) -> tuple[int | None, float, dict[str, float]]:
     submetric_scores: dict[str, float] = {
-        # Конфиг всегда участвует в формуле: отсутствие = 0 баллов.
         "ci_config_present": 100.0 if config_present else 0.0,
     }
     if stats is not None and stats.success_rate is not None:
@@ -393,8 +379,6 @@ def _save_scored(
             scan,
             "ci_config_present",
             config_present,
-            # Ссылку даём только когда конфиг реально найден — иначе
-            # source_reference останется пустым.
             source_reference=CI_CONFIG_PATH if config_present else "",
         )
         _save_metric(
@@ -417,8 +401,6 @@ def _save_scored(
             unit="minutes",
             is_available=duration_available,
             reason="" if duration_available else runs_reason,
-            # Медиана считается по завершённым прогонам; в качестве
-            # подтверждения используем последний известный проблемный прогон.
             source_reference=(stats.last_red_url if stats is not None else ""),
         )
         _build_findings(scan, config_present, stats, total, submetric_scores)

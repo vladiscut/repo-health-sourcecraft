@@ -1,5 +1,3 @@
-"""Тесты очистки каталогов клонов: post_save-сигнал и сборщик."""
-
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
