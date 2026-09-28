@@ -14,11 +14,6 @@ urlpatterns = [
     path("me/pat/revoke/", account.revoke_sourcecraft_pat, name="revoke-pat"),
     path("me/refresh/", account.refresh_my_repos, name="refresh-my-repos"),
     path(
-        "me/repos/<str:org_slug>/<str:repo_slug>/analyze/",
-        account.analyze_my_repo,
-        name="analyze-my-repo",
-    ),
-    path(
         "repos/<str:org_slug>/<str:repo_slug>/",
         views.RepoDetailView.as_view(),
         name="repo-detail",

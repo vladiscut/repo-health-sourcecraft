@@ -1,11 +1,8 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.urls import reverse
-from unittest.mock import patch
 
-from health.models import Scan
 from health.tests.helpers import grant_access, make_profile, make_repo
-from integrations.sourcecraft import SourceCraftError
 
 
 class AuthFlowTests(TestCase):
@@ -75,70 +72,3 @@ class MyReposTests(TestCase):
         self.user.profile.refresh_from_db()
         self.assertFalse(self.user.profile.sourcecraft_pat)
         self.assertFalse(self.user.repository_access.exists())
-    @patch("health.account.task_scan_user_repository")
-    def test_analyze_creates_pending_scan(self, delay):
-        response = self.client.post(
-            reverse("health:analyze-my-repo", args=["ivan", "app"]),
-            {"next": reverse("health:my-repos")},
-        )
-        self.assertRedirects(response, reverse("health:my-repos"))
-        scan = Scan.objects.get()
-        self.assertEqual(scan.status, Scan.Status.PENDING)
-        self.assertEqual(scan.triggered_by, Scan.TriggeredBy.USER)
-        delay.delay.assert_called_once_with(self.repo.id)
-
-    @patch("health.account.task_scan_user_repository")
-    def test_analyze_while_scan_is_active_shows_message(self, delay):
-        url = reverse("health:analyze-my-repo", args=["ivan", "app"])
-        self.client.post(url, {"next": reverse("health:my-repos")})
-        response = self.client.post(url, {"next": reverse("health:my-repos")})
-
-        self.assertRedirects(response, reverse("health:my-repos"))
-        self.assertEqual(Scan.objects.count(), 1)
-        delay.delay.assert_called_once_with(self.repo.id)
-
-    @patch("health.account.task_scan_user_repository")
-    def test_analyze_rejects_open_redirect(self, delay):
-        response = self.client.post(
-            reverse("health:analyze-my-repo", args=["ivan", "app"]),
-            {"next": "https://evil.example/phish"},
-        )
-        self.assertRedirects(
-            response,
-            reverse("health:repo-detail", args=["ivan", "app"]),
-        )
-        delay.delay.assert_called_once()
-
-    def test_analyze_foreign_repo_is_404(self):
-        make_repo(org_slug="other", repo_slug="nope", sourcecraft_id="nope-1")
-        response = self.client.post(
-            reverse("health:analyze-my-repo", args=["other", "nope"]),
-        )
-        self.assertEqual(response.status_code, 404)
-        self.assertFalse(Scan.objects.exists())
-
-    @patch("health.account.task_scan_user_repository")
-    @patch("health.user_repository.SourceCraftClient")
-    def test_analyze_private_repo_requires_live_api_access(self, client_cls, delay):
-        private = make_repo(
-            org_slug="hidden",
-            repo_slug="secret",
-            visibility="private",
-            sourcecraft_id="private-1",
-        )
-        grant_access(self.user, private)
-        self.user.profile.sourcecraft_pat = "pat-revoked-rights"
-        self.user.profile.save()
-        client_cls.return_value.get_repository.side_effect = SourceCraftError(
-            "forbidden",
-            status_code=403,
-        )
-
-        response = self.client.post(
-            reverse("health:analyze-my-repo", args=["hidden", "secret"]),
-        )
-
-        self.assertEqual(response.status_code, 404)
-        self.assertFalse(Scan.objects.exists())
-        delay.delay.assert_not_called()
-

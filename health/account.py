@@ -3,22 +3,18 @@
 from django.contrib import messages
 from django.contrib.auth import login, logout
 from django.contrib.auth.decorators import login_required
-from django.db import IntegrityError
 from django.db.models import Prefetch
-from django.http import Http404, HttpRequest, HttpResponse
-from django.shortcuts import get_object_or_404, redirect, render
-from django.urls import reverse
+from django.http import HttpRequest, HttpResponse
+from django.shortcuts import redirect, render
 from django.views.decorators.http import require_GET, require_POST
 
-from health.models import Profile, Repository, Scan, UserRepositoryAccess
+from health.models import Profile, Scan, UserRepositoryAccess
 from health.user_repository import (
     sourcecraft_token_works,
     sync_user_repositories,
     upsert_yandex_user,
-    user_can_access_repository,
 )
-from health.tasks import task_scan_user_repository
-from health.views import _present, _safe_next_url
+from health.views import _present
 from integrations.sourcecraft import SourceCraftError
 from integrations.yandex import (
     YandexOAuthError,
@@ -193,43 +189,3 @@ def refresh_my_repos(request: HttpRequest) -> HttpResponse:
     except SourceCraftError as exc:
         messages.error(request, f"Не удалось получить репозитории: {exc}")
     return redirect("health:my-repos")
-
-@login_required
-@require_POST
-def analyze_my_repo(request: HttpRequest, org_slug: str, repo_slug: str) -> HttpResponse:
-    repo = get_object_or_404(Repository, org_slug=org_slug, repo_slug=repo_slug)
-    if repo.visibility == Repository.VisibilityType.PUBLIC:
-        allowed = UserRepositoryAccess.objects.filter(
-            user=request.user,
-            repository=repo,
-        ).exists()
-    else:
-        allowed = user_can_access_repository(request.user, repo)
-    if not allowed:
-        raise Http404()
-    fallback = reverse("health:repo-detail", args=[org_slug, repo_slug])
-    next_url = _safe_next_url(request, fallback)
-    active = Scan.objects.filter(
-        repository=repo,
-        status__in=[Scan.Status.PENDING, Scan.Status.RUNNING],
-    ).exists()
-    if active:
-        messages.info(request, "Анализ этого репозитория уже идёт.")
-        return redirect(next_url)
-    try:
-        Scan.objects.create(
-            repository=repo,
-            status=Scan.Status.PENDING,
-            triggered_by=Scan.TriggeredBy.USER,
-            triggered_by_user=request.user,
-        )
-    except IntegrityError:
-        messages.info(request, "Анализ этого репозитория уже идёт.")
-        return redirect(next_url)
-    task_scan_user_repository.delay(repo.id)
-    messages.info(
-        request,
-        "Анализ поставлен в очередь. Сбор метрик пока не подключён — это заготовка.",
-    )
-    return redirect(next_url)
-

@@ -227,8 +227,3 @@ def task_clear_repo_tree(scan_id: int) -> None:
     scan = Scan.objects.select_related("repository").filter(pk=scan_id).first()
     if scan:
         clear_repository_tree_cache(scan.repository)
-
-
-def task_scan_user_repository(obj1, obj2):
-    # TODO delete
-    pass
