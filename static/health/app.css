@@ -25,7 +25,7 @@ a:hover { text-decoration: underline; }
     gap: 16px;
 }
 .brand { font-weight: 700; color: var(--text); }
-.nav { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.nav { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; font-size: 14px; }
 .nav a { color: var(--text); }
 .inline { display: inline; margin: 0; }
 button.linkish {
@@ -34,12 +34,15 @@ button.linkish {
     padding: 0;
     font-weight: 500;
 }
-.wrap { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; }
+button:hover {
+    opacity: 0.9;
+}
+.wrap { max-width: 1200px; margin: 0 auto; padding: 32px 24px 64px; }
 h1 { margin: 0 0 8px; font-size: 28px; }
 h2 { margin: 32px 0 12px; font-size: 18px; }
 .lead { color: var(--muted); margin-top: 0; }
 .muted { color: var(--muted); font-size: 14px; }
-.crumb { margin-bottom: 16px; }
+.crumb { margin-bottom: 16px; font-size: 14px; }
 
 .flash { list-style: none; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); }
 
@@ -112,13 +115,17 @@ button.danger { background: var(--bad); color: #fff; }
     display: inline-block;
     background: var(--accent);
     color: #0b1220;
-    padding: 10px 16px;
+    padding: 8px 14px;
     font-weight: 700;
+    font-size: 14px;
 }
 .btn.ghost {
     background: transparent;
     color: var(--text);
     border: 1px solid var(--line);
+}
+.btn.ghost:hover {
+    opacity: 0.9;
 }
 .btn:hover { text-decoration: none; }
 .pager { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 20px; }
@@ -159,7 +166,8 @@ button.busy { opacity: 0.6; }
 .loader { display: none; width: 16px; height: 16px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 button.busy + .loader,
 .loader.visible { display: inline-block; }
-.hero-score .loader.visible { width: 28px; height: 28px; margin-bottom: 8px; }
+.hero-score .loader.visible { width: 28px; height: 28px; margin-bottom: 8px; text-align: center; }
+.hero-score .muted { font-size: 11px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .bars { list-style: none; padding: 0; margin: 0; }

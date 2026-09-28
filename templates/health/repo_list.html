@@ -34,6 +34,7 @@
             <th>Язык</th>
             <th>Рейтинг</th>
             <th>Реакции</th>
+            <th>Активность</th>
             <th>Проверка</th>
             <th>Score</th>
         </tr>
@@ -59,6 +60,7 @@
                 <span class="rx" title="сердце">❤️ {{ item.repo.hearts }}</span>
                 <span class="rx" title="бриллиант">💎 {{ item.repo.diamonds }}</span>
             </td>
+            <td class="muted">{{ item.repo.last_updated|date:"d.m.Y H:i" }}</td>
             <td class="muted">{{ item.repo.last_scanned_at|date:"d.m.Y H:i"|default:"нет" }}</td>
             <td>
                 {% if item.score and item.score.total is not None %}
