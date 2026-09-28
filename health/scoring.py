@@ -24,6 +24,15 @@ CATEGORY_WEIGHTS = {
     MetricSample.Category.ISSUES: 0.15,
 }
 
+# CI/CD: веса под-метрик (сумма = 1.0). Живут здесь, а не в
+# health/cicd_scan.py, чтобы SUBMETRIC_WEIGHTS_BY_CATEGORY мог собрать
+# карту всех шести категорий без циклического импорта.
+CICD_SUBMETRIC_WEIGHTS = {
+    "ci_config_present": 0.30,
+    "success_rate": 0.55,
+    "duration": 0.15,
+}
+
 CATEGORY_LABELS = {
     MetricSample.Category.DOCS: "Документация",
     MetricSample.Category.CI_CD: "CI/CD",
@@ -85,6 +94,36 @@ def weighted_submetric_score(
     score = weighted_sum / available_weight
     data_completeness = available_weight / total_weight
     return round(score), round(data_completeness, 2)
+
+
+def find_impact(
+    submetric_key: str,
+    submetric_weights: dict[str, float],
+    submetric_scores: dict[str, float],
+) -> int:
+    """Сколько баллов КАТЕГОРИИ вернёт устранение проблемы по субметрике.
+
+    Контракт `estimated_score_impact` находки (см. design.md D1): целое
+    число 0-100, равное числу баллов категории, которое вернёт доведение
+    субметрики до 100.
+
+    Правило:
+
+    - если `submetric_key` отсутствует в `submetric_scores` (метрику не
+      удалось получить) или в `submetric_weights` — 0: исправление
+      недоступной метрики балл не меняет;
+    - иначе ``round(weight * (100 - score))``.
+
+    Пример: ``contributing_codeowners`` с весом 0.15 и баллом 0 -> 15.
+    """
+
+    if submetric_key not in submetric_scores:
+        return 0
+    if submetric_key not in submetric_weights:
+        return 0
+    weight = submetric_weights[submetric_key]
+    score = submetric_scores[submetric_key]
+    return round(weight * (100.0 - score))
 
 
 _SEVERITY_ORDER = [
@@ -227,10 +266,10 @@ DOCS_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD = 40
 DOCS_SUBMETRIC_WEIGHTS = {
     "readme_quality": 0.30,
     "license": 0.20,
-    "local_run": 0.15,
-    "build_test": 0.15,
-    "contributing_codeowners": 0.10,
-    "structure_extras": 0.10,
+    "local_run": 0.10,
+    "build_test": 0.10,
+    "contributing_codeowners": 0.15,
+    "structure_extras": 0.15,
 }
 
 # README: <500 символов — 0 баллов (worst), >=3000 символов — 100 (best).
@@ -243,7 +282,7 @@ def score_docs_category(metrics) -> tuple[int | None, float, dict[str, float]]:
 
     submetric_scores: dict[str, float] = {}
 
-    # readme_quality: наличие + размер + ключевые разделы.
+    # readme_quality: наличие + размер + ключевой раздел структуры.
     # Считается ТОЛЬКО если контент реально прочитан (readme_size_chars
     # не None) — иначе это "нет данных", а не плохой/хороший балл, и
     # submetric не должен фабриковаться из дефолтов.
@@ -257,8 +296,6 @@ def score_docs_category(metrics) -> tuple[int | None, float, dict[str, float]]:
         )
 
         section_flags = [
-            metrics.readme_has_local_run,
-            metrics.readme_has_build_test,
             metrics.readme_has_structure,
         ]
         known = [bool(f) for f in section_flags if f is not None]
@@ -281,6 +318,39 @@ def score_docs_category(metrics) -> tuple[int | None, float, dict[str, float]]:
             submetric_scores["license"] = 50.0
         elif metrics.license_type_recognized is True:
             submetric_scores["license"] = 100.0
+
+    # local_run: инструкция локального запуска в README (standalone).
+    if metrics.readme_has_local_run is not None:
+        submetric_scores["local_run"] = (
+            100.0 if metrics.readme_has_local_run else 0.0
+        )
+
+    # build_test: инструкция сборки/тестов в README (standalone).
+    if metrics.readme_has_build_test is not None:
+        submetric_scores["build_test"] = (
+            100.0 if metrics.readme_has_build_test else 0.0
+        )
+
+    # contributing_codeowners: вклад и владельцы кода.
+    contrib_flags = [metrics.contributing_present, metrics.codeowners_present]
+    known_contrib = [bool(f) for f in contrib_flags if f is not None]
+    if known_contrib:
+        submetric_scores["contributing_codeowners"] = (
+            sum(100.0 for f in known_contrib if f) / len(known_contrib)
+        )
+
+    # structure_extras: дополнительные структурные сигналы документации.
+    extras_flags = [
+        metrics.changelog_present,
+        metrics.docs_dir_present,
+        metrics.issue_templates_present,
+        metrics.pr_template_present,
+    ]
+    known_extras = [bool(f) for f in extras_flags if f is not None]
+    if known_extras:
+        submetric_scores["structure_extras"] = (
+            sum(100.0 for f in known_extras if f) / len(known_extras)
+        )
 
     if not submetric_scores:
         return None, 0.0, submetric_scores
@@ -463,6 +533,96 @@ CODE_HEALTH_SUBMETRIC_WEIGHTS = {
     "todo_debt": 0.15,
 }
 
+CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE = {
+    "tests_present": 0.30,
+    "no_committed_junk": 0.25,
+    "structure": 0.17,
+    "lint_config_present": 0.17,
+    "dependency_hygiene": 0.11,
+    "todo_debt": 0.05,
+}
+
+
+# --------------------------------------------------------------------
+# Security: веса под-метрик и расчёт балла категории.
+# --------------------------------------------------------------------
+
+# Сумма весов = 1.0, независимо от CATEGORY_WEIGHTS[SECURITY] (0.20).
+# Штрафы за открытые группы уязвимостей: direct critical тяжелее
+# транзитивного, high — самый лёгкий. Балл категории = 100 минус
+# сумма штрафов; submetric-баллы выражают «здоровье» по каждой
+# критичности (100 при отсутствии открытых групп, 0 при упоре в
+# максимальный штраф).
+SECURITY_DIRECT_CRITICAL_PENALTY = 30
+SECURITY_TRANSITIVE_CRITICAL_PENALTY = 20
+SECURITY_HIGH_PENALTY = 10
+
+SECURITY_SUBMETRIC_WEIGHTS = {
+    "direct": 0.50,      # SECURITY_DIRECT_CRITICAL_PENALTY
+    "transitive": 0.35,  # SECURITY_TRANSITIVE_CRITICAL_PENALTY
+    "high": 0.15,        # SECURITY_HIGH_PENALTY
+}
+
+
+def score_security_category(metrics) -> tuple[int | None, float, dict[str, float]]:
+    """Считает балл категории Security по уже собранным сырым метрикам.
+
+    ``metrics`` — любой объект с атрибутами ``direct_penalty_sum``,
+    ``transitive_penalty_sum`` и ``high_penalty_sum`` — суммарные штрафы
+    (в баллах 0-100) по открытым группам соответствующей критичности
+    (см. ``health.security_scan``). Чистая функция без обращений к
+    БД/API, как и остальные ``score_*`` в этом модуле.
+
+    submetric-баллы: 100 — открытых групп этой критичности нет (штраф 0),
+    0 — штраф достиг максимума (равен весу категории * 100). Между
+    ними — линейно. Возвращает ``(score_0_100_or_None,
+    data_completeness_0_1, submetric_scores)``.
+    """
+
+    submetric_scores: dict[str, float] = {
+        "direct": scale(
+            metrics.direct_penalty_sum,
+            worst=SECURITY_DIRECT_CRITICAL_PENALTY,
+            best=0.0,
+        ),
+        "transitive": scale(
+            metrics.transitive_penalty_sum,
+            worst=SECURITY_TRANSITIVE_CRITICAL_PENALTY,
+            best=0.0,
+        ),
+        "high": scale(
+            metrics.high_penalty_sum,
+            worst=SECURITY_HIGH_PENALTY,
+            best=0.0,
+        ),
+    }
+
+    score, data_completeness = weighted_submetric_score(
+        submetric_scores, SECURITY_SUBMETRIC_WEIGHTS
+    )
+    return score, data_completeness, submetric_scores
+
+
+# --------------------------------------------------------------------
+# Единая карта "категория -> её веса субметрик". Единственное место, где
+# перечислены все шесть категорий сразу: используется для валидации
+# (сумма весов = 1.0) и как точка входа для find_impact().
+#
+# Activity здесь представлена ОБОИМИ наборами (with/without commits),
+# потому что выбор набора зависит от типа скана, а не от категории.
+# --------------------------------------------------------------------
+SUBMETRIC_WEIGHTS_BY_CATEGORY = {
+    MetricSample.Category.DOCS: DOCS_SUBMETRIC_WEIGHTS,
+    MetricSample.Category.ISSUES: ISSUES_SUBMETRIC_WEIGHTS,
+    MetricSample.Category.CODE_HEALTH: CODE_HEALTH_SUBMETRIC_WEIGHTS,
+    MetricSample.Category.CI_CD: CICD_SUBMETRIC_WEIGHTS,
+    MetricSample.Category.ACTIVITY: {
+        "with_commits": ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS,
+        "without_commits": ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS,
+    },
+    MetricSample.Category.SECURITY: SECURITY_SUBMETRIC_WEIGHTS,
+}
+
 # todo_debt: количество TODO/FIXME, при котором балл падает до 0 (сам
 # факт большого объёма долга), и порог "старых" (давность в днях),
 # при превышении доли которых добавляется отдельный штраф.
@@ -554,12 +714,21 @@ def _score_todo_debt(metrics) -> float | None:
     return count_score
 
 
-def score_code_health_category(metrics) -> tuple[int | None, float, dict[str, float]]:
+def score_code_health_category(
+    metrics, include_todo_age: bool = True
+) -> tuple[int | None, float, dict[str, float]]:
     """Считает балл категории Code health по уже собранным сырым метрикам.
 
     ``metrics`` — объект вида health.code_health_scan._CodeHealthMetrics.
     Чистая функция без обращений к БД/API, как и остальные score_*
     в этом модуле.
+
+    ``include_todo_age`` выбирает набор весов под-метрик: когда давность
+    TODO не считается (массовый плановый скан, публичный репозиторий),
+    submetric ``todo_debt`` не получает штраф за застарелость, поэтому
+    его вклад перераспределяется на остальные под-метрики через
+    CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE. По умолчанию True —
+    обратная совместимость с прежним поведением.
     """
 
     submetric_scores: dict[str, float] = {}
@@ -591,8 +760,14 @@ def score_code_health_category(metrics) -> tuple[int | None, float, dict[str, fl
     if not submetric_scores:
         return None, 0.0, submetric_scores
 
+    weights = (
+        CODE_HEALTH_SUBMETRIC_WEIGHTS
+        if include_todo_age
+        else CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE
+    )
+
     score, data_completeness = weighted_submetric_score(
-        submetric_scores, CODE_HEALTH_SUBMETRIC_WEIGHTS
+        submetric_scores, weights
     )
     return score, data_completeness, submetric_scores
 
@@ -610,6 +785,86 @@ def overall_from_category_totals(totals: dict[str, int | None]) -> int | None:
     if used == 0:
         return None
     return round(acc / used)
+
+
+def _weighted_overall(
+    totals: dict[str, int | None],
+    weights: dict[str, float],
+) -> int | None:
+    """Взвешенная сумма категорий с явными весами.
+
+    Аналог overall_from_category_totals(), но принимает произвольный
+    набор весов (например, ренормализованный), а не CATEGORY_WEIGHTS.
+    None, если считать нечего.
+    """
+    used = 0.0
+    acc = 0.0
+    for category, weight in weights.items():
+        value = totals.get(category)
+        if value is None:
+            continue
+        acc += value * weight
+        used += weight
+    if used == 0:
+        return None
+    return round(acc / used)
+
+
+def compute_finding_impact(
+    category: str,
+    submetric_scores: dict[str, float],
+    submetric_weights: dict[str, float],
+    all_category_totals: dict[str, int | None],
+    renormalized_category_weights: dict[str, float],
+    fixed_submetrics: dict[str, float],
+) -> int | None:
+    """Честный дифференциальный estimated_score_impact для finding.
+
+    Пересчитывает балл категории с под-метриками, заменёнными на
+    "починенные" значения из fixed_submetrics, затем пересчитывает
+    общий балл с теми же ренормализованными весами категорий и
+    возвращает положительную дельту (0, если роста нет).
+
+    Возвращает None, если исходный общий балл посчитать нельзя или
+    для категории отсутствуют данные.
+    """
+    current_overall = _weighted_overall(
+        all_category_totals, renormalized_category_weights
+    )
+    if current_overall is None:
+        return None
+
+    # Категория должна присутствовать с непустым баллом, иначе
+    # дифференциал не определён.
+    category_total = all_category_totals.get(category)
+    if category_total is None:
+        return None
+
+    fixed_scores = dict(submetric_scores)
+    fixed_scores.update(fixed_submetrics)
+    new_category_total, _ = weighted_submetric_score(
+        fixed_scores, submetric_weights
+    )
+    if new_category_total is None:
+        return None
+
+    new_totals = dict(all_category_totals)
+    new_totals[category] = new_category_total
+    new_overall = _weighted_overall(
+        new_totals, renormalized_category_weights
+    )
+    if new_overall is None:
+        return None
+
+    delta = new_overall - current_overall
+    if delta <= 0:
+        return 0
+
+    # Потолок: не больше оставшегося запаса до 100.
+    headroom = 100 - current_overall
+    if headroom < 0:
+        headroom = 0
+    return min(delta, headroom)
 
 
 def score_level(total: int | None) -> str:

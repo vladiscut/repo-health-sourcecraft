@@ -355,3 +355,69 @@ class FallbackRenormalizationTests(SimpleTestCase):
         self.assertIn("todo_debt", submetrics)
         self.assertIsNotNone(score)
         self.assertEqual(completeness, 1.0)
+
+
+class IncludeTodoAgeWeightsTests(SimpleTestCase):
+    """score_code_health_category выбирает набор весов по include_todo_age.
+
+    При include_todo_age=False должен использоваться
+    CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE, иначе балл категории
+    и estimated_score_impact расходятся с фактическими весами планового
+    скана.
+    """
+
+    def _repo(self, sha="abc"):
+        return Mock(org_slug="org", repo_slug="repo", scan_commit_sha=sha)
+
+    def _metrics(self, tree):
+        from health.code_health_scan import _compute_metrics
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("health.code_health_scan.get_scan_repo_dir") as get_dir:
+                get_dir.return_value = Path(tmp)
+                return _compute_metrics(
+                    git_client=None, repository=self._repo(),
+                    tree=tree, include_todo_age=False, scan_id=1,
+                    file_client=None,
+                )
+
+    def test_without_todo_age_uses_without_todo_age_weights(self):
+        from health.scoring import (
+            CODE_HEALTH_SUBMETRIC_WEIGHTS,
+            CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE,
+            score_code_health_category,
+        )
+
+        tree = _tree(
+            _file("package.json"), _file("package-lock.json"),
+            _file("src/main.py"), _dir("tests"),
+        )
+        metrics = self._metrics(tree)
+
+        score_new, _, _ = score_code_health_category(
+            metrics, include_todo_age=False
+        )
+        score_old, _, _ = score_code_health_category(
+            metrics, include_todo_age=True
+        )
+
+        # Наборы весов различаются (todo_debt 0.05 vs 0.15) — значит и
+        # итоговый балл должен отличаться при одинаковых субметриках.
+        self.assertNotEqual(
+            CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE,
+            CODE_HEALTH_SUBMETRIC_WEIGHTS,
+        )
+        self.assertIsNotNone(score_new)
+        self.assertIsNotNone(score_old)
+
+    def test_default_argument_preserves_old_behaviour(self):
+        from health.scoring import score_code_health_category
+
+        tree = _tree(_file("src/main.py"))
+        metrics = self._metrics(tree)
+
+        default_score, _, _ = score_code_health_category(metrics)
+        explicit_score, _, _ = score_code_health_category(
+            metrics, include_todo_age=True
+        )
+        self.assertEqual(default_score, explicit_score)

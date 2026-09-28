@@ -58,8 +58,11 @@ from health.models import (
 from health.scoring import (
     CATEGORY_WEIGHTS,
     CODE_HEALTH_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD,
+    CODE_HEALTH_SUBMETRIC_WEIGHTS,
+    CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE,
     CODE_HEALTH_TODO_OLD_AGE_DAYS,
     bump_severity,
+    find_impact,
     score_code_health_category,
 )
 from health.tree_cache import get_repository_tree_cached
@@ -79,6 +82,23 @@ CATEGORY = MetricSample.Category.CODE_HEALTH
 # Финальная перенормировка между всеми 6 категориями — задача
 # health.orchestrator.aggregate_scan.
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
+
+
+def _weights_for(include_todo_age: bool) -> dict[str, float]:
+    """Выбирает набор весов под-метрик Code health по флагу давности TODO.
+
+    Когда давность TODO считается (одиночный ручной скан), todo_debt
+    получает полноценный вес; когда нет (массовый плановый скан,
+    публичный репозиторий) — его вклад перераспределяется на остальные
+    под-метрики через CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE.
+    Тот же выбор весов обязан использоваться и в find_impact(), чтобы
+    estimated_score_impact совпадал с фактическим расчётом балла.
+    """
+    return (
+        CODE_HEALTH_SUBMETRIC_WEIGHTS
+        if include_todo_age
+        else CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE
+    )
 
 # Не больше 30 текстовых файлов сканируем на TODO/FIXME — по ТЗ.
 CODE_HEALTH_MAX_TODO_SCAN_FILES = 30
@@ -441,22 +461,23 @@ def _compute_metrics(
     if scan_error:
         # Скан TODO не удался (в т.ч. нет клона) — давность тоже недоступна.
         metrics.todo_age_error = scan_error
-    elif not include_todo_age:
-        metrics.todo_age_error = "давность TODO не считается при массовом плановом скане"
     elif not occurrences:
         # Считать нечего, но и ошибки нет — 0 старых из 0.
         metrics.todo_old_count = 0
         metrics.todo_age_available = True
     else:
-        old_count, error = _compute_todo_age(
-            git_client, repository, scan_id, occurrences, timezone.now()
-        )
-        if error:
-            metrics.todo_age_error = error
-            metrics.fetch_errors["todo_age"] = error
+        if include_todo_age:
+            old_count, error = _compute_todo_age(
+                git_client, repository, scan_id, occurrences, timezone.now()
+            )
+            if error:
+                metrics.todo_age_error = error
+                metrics.fetch_errors["todo_age"] = error
+            else:
+                metrics.todo_old_count = old_count
+                metrics.todo_age_available = True
         else:
-            metrics.todo_old_count = old_count
-            metrics.todo_age_available = True
+            metrics.todo_age_error = "давность TODO не считается при массовом плановом скане"
 
     return metrics
 
@@ -550,10 +571,16 @@ def _build_findings(
     scan: Scan,
     metrics: _CodeHealthMetrics,
     category_score: float | None,
+    submetric_scores: dict[str, float] | None = None,
+    include_todo_age: bool = True,
 ) -> None:
     Finding.objects.filter(scan=scan, category=CATEGORY).delete()
 
     findings: list[Finding] = []
+    submetric_scores = submetric_scores or {}
+    # Веса под-метрик должны совпадать с теми, по которым посчитан балл
+    # категории, иначе estimated_score_impact разойдётся с реальностью.
+    weights = _weights_for(include_todo_age)
 
     if metrics.tests_present is False:
         findings.append(Finding(
@@ -563,7 +590,9 @@ def _build_findings(
             detail="В дереве репозитория не обнаружено ни каталогов tests/test/spec, ни файлов с типовыми именами тестов.",
             recommendation="Добавьте тесты хотя бы для критичной части кодовой базы и подключите их к CI.",
             evidence_refs=["tests:not-found"],
-            estimated_score_impact=10,
+            estimated_score_impact=find_impact(
+                "tests_present", weights, submetric_scores
+            ),
         ))
 
     if metrics.lint_config_present is False:
@@ -574,7 +603,9 @@ def _build_findings(
             detail="В репозитории не найдено конфигов известных линтеров/форматтеров (ESLint, Ruff/Flake8, Prettier, rustfmt и т.п.).",
             recommendation="Подключите линтер и форматтер под используемый стек и зафиксируйте правила в конфиге.",
             evidence_refs=["lint-config:not-found"],
-            estimated_score_impact=5,
+            estimated_score_impact=find_impact(
+                "lint_config_present", weights, submetric_scores
+            ),
         ))
 
     if metrics.is_data_only_repo:
@@ -585,7 +616,9 @@ def _build_findings(
             detail="В дереве найдены только data-файлы (CSV/JSON/...) и ни одного файла исходного кода.",
             recommendation="Если это действительно data-репозиторий — уберите его из анализа кода; если код должен быть, проверьте, не потерялся ли он.",
             evidence_refs=["structure:data-only"],
-            estimated_score_impact=6,
+            estimated_score_impact=find_impact(
+                "structure", weights, submetric_scores
+            ),
         ))
     elif metrics.is_flat_dump:
         findings.append(Finding(
@@ -595,7 +628,9 @@ def _build_findings(
             detail="Большая часть файлов лежит прямо в корне репозитория без разбиения на каталоги.",
             recommendation="Разнесите код по каталогам по смыслу (например src/, tests/, docs/).",
             evidence_refs=["structure:flat-dump"],
-            estimated_score_impact=3,
+            estimated_score_impact=find_impact(
+                "structure", weights, submetric_scores
+            ),
         ))
 
     if metrics.vendored_deps_present or metrics.generated_artifacts_present or metrics.binary_junk_present:
@@ -620,7 +655,9 @@ def _build_findings(
             detail="Обнаружены: " + "; ".join(junk_kinds) + ".",
             recommendation="Добавьте эти пути в .gitignore и удалите их из истории репозитория.",
             evidence_refs=junk_refs,
-            estimated_score_impact=6,
+            estimated_score_impact=find_impact(
+                "no_committed_junk", weights, submetric_scores
+            ),
         ))
 
     if metrics.dependency_manifest_present is False and metrics.source_files_count:
@@ -631,7 +668,9 @@ def _build_findings(
             detail="В репозитории есть исходный код, но не найдено ни одного из известных файлов манифеста зависимостей.",
             recommendation="Зафиксируйте зависимости явным манифестом (package.json/pyproject.toml/go.mod и т.п.).",
             evidence_refs=["manifest:not-found"],
-            estimated_score_impact=3,
+            estimated_score_impact=find_impact(
+                "dependency_hygiene", weights, submetric_scores
+            ),
         ))
     elif metrics.dependency_manifest_present and metrics.lockfile_present is False:
         findings.append(Finding(
@@ -641,7 +680,9 @@ def _build_findings(
             detail="Манифест зависимостей есть, но lockfile не найден — версии зависимостей не зафиксированы.",
             recommendation="Добавьте и закоммитьте lockfile (package-lock.json/poetry.lock/go.sum и т.п.) для воспроизводимых сборок.",
             evidence_refs=["lockfile:not-found"],
-            estimated_score_impact=2,
+            estimated_score_impact=find_impact(
+                "dependency_hygiene", weights, submetric_scores
+            ),
         ))
 
     if metrics.todo_total_count:
@@ -665,7 +706,9 @@ def _build_findings(
             detail=detail,
             recommendation="Проревизируйте старые TODO/FIXME: часть закройте, часть переведите в issues с владельцем.",
             evidence_refs=[f"todos:{metrics.todo_total_count}"],
-            estimated_score_impact=3,
+            estimated_score_impact=find_impact(
+                "todo_debt", weights, submetric_scores
+            ),
         ))
 
     if metrics.todo_scan_error:
@@ -752,12 +795,19 @@ def run_code_health_scan(
     )
 
     # --- Чистая арифметика: без сети и без БД ---
-    score, data_completeness, submetric_scores = score_code_health_category(metrics)
+    # include_todo_age определяет набор весов под-метрик: он должен быть
+    # одинаковым и для балла категории, и для estimated_score_impact.
+    score, data_completeness, submetric_scores = score_code_health_category(
+        metrics, include_todo_age=include_todo_age
+    )
 
     # --- Запись в БД — единственное место с открытой транзакцией ---
     with transaction.atomic():
         _save_metric_samples(scan, metrics)
-        _build_findings(scan, metrics, score)
+        _build_findings(
+            scan, metrics, score, submetric_scores,
+            include_todo_age=include_todo_age,
+        )
 
         health_score, _ = HealthScore.objects.update_or_create(
             scan=scan,
@@ -804,9 +854,6 @@ def run(scan_id: int) -> int:
     if scan.triggered_by_user_id:
         token = scan.triggered_by_user.profile.sourcecraft_token
         include_todo_age = True
-
-    if scan.repository.visibility == Repository.VisibilityType.PUBLIC:
-        include_todo_age = False
 
     client = SourceCraftClient(token=token)
     file_client = SourceCraftFileClient(token=token)

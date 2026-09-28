@@ -16,18 +16,21 @@ from django.conf import settings
 from django.db import transaction
 
 from health.models import Finding, HealthScore, MetricSample, Profile, Scan
-from health.scoring import CATEGORY_WEIGHTS
+from health.scoring import (
+    CATEGORY_WEIGHTS,
+    SECURITY_DIRECT_CRITICAL_PENALTY,
+    SECURITY_HIGH_PENALTY,
+    SECURITY_SUBMETRIC_WEIGHTS,
+    SECURITY_TRANSITIVE_CRITICAL_PENALTY,
+    find_impact,
+    score_security_category,
+)
 from integrations.appsec import AppSecClient, AppSecClientError
 
 logger = logging.getLogger(__name__)
 
 CATEGORY = MetricSample.Category.SECURITY
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
-
-CLEAN_SCORE = 100
-DIRECT_CRITICAL_PENALTY = 30
-TRANSITIVE_CRITICAL_PENALTY = 20
-HIGH_PENALTY = 10
 
 SCANNERS = frozenset({"sca", "sast", "secrets"})
 CLOSED_STATUSES = frozenset({
@@ -46,6 +49,19 @@ class _GroupHit:
     transitive: bool
     penalty: int
     url: str
+
+
+@dataclass
+class _SecurityMetrics:
+    """Сырые метрики категории Security для score_security_category().
+
+    Суммарные штрафы (в баллах 0-100) по открытым группам каждой
+    критичности. Чистая структура данных, без обращений к БД/API.
+    """
+
+    direct_penalty_sum: int
+    transitive_penalty_sum: int
+    high_penalty_sum: int
 
 
 def _user_pat(scan: Scan) -> str:
@@ -138,9 +154,9 @@ def _hit(group: dict[str, Any]) -> _GroupHit | None:
     severity = str(group.get("severity") or "").lower()
     transitive = _is_transitive(group)
     if severity == "critical":
-        penalty = TRANSITIVE_CRITICAL_PENALTY if transitive else DIRECT_CRITICAL_PENALTY
+        penalty = SECURITY_TRANSITIVE_CRITICAL_PENALTY if transitive else SECURITY_DIRECT_CRITICAL_PENALTY
     elif severity == "high":
-        penalty = HIGH_PENALTY
+        penalty = SECURITY_HIGH_PENALTY
     else:
         return None
     return _GroupHit(
@@ -161,11 +177,38 @@ def _collect(groups: list[dict[str, Any]]) -> list[_GroupHit]:
     return hits
 
 
-def _score(hits: list[_GroupHit]) -> int:
-    return max(0, CLEAN_SCORE - sum(hit.penalty for hit in hits))
+def _submetric_key(hit: _GroupHit) -> str:
+    """Ключ субметрики Security, к которой относится находка."""
+
+    if hit.severity == "critical":
+        return "transitive" if hit.transitive else "direct"
+    return "high"
 
 
-def _build_findings(scan: Scan, hits: list[_GroupHit]) -> None:
+def _metrics(hits: list[_GroupHit]) -> _SecurityMetrics:
+    """Схлопывает находки в суммарные штрафы по каждой субметрике."""
+
+    direct_sum = sum(
+        hit.penalty for hit in hits
+        if hit.severity == "critical" and not hit.transitive
+    )
+    transitive_sum = sum(
+        hit.penalty for hit in hits
+        if hit.severity == "critical" and hit.transitive
+    )
+    high_sum = sum(hit.penalty for hit in hits if hit.severity == "high")
+    return _SecurityMetrics(
+        direct_penalty_sum=direct_sum,
+        transitive_penalty_sum=transitive_sum,
+        high_penalty_sum=high_sum,
+    )
+
+
+def _build_findings(
+    scan: Scan,
+    hits: list[_GroupHit],
+    submetric_scores: dict[str, float],
+) -> None:
     Finding.objects.filter(scan=scan, category=CATEGORY).delete()
     findings = [
         Finding(
@@ -186,7 +229,11 @@ def _build_findings(scan: Scan, hits: list[_GroupHit]) -> None:
             ),
             recommendation="Закройте уязвимость или отметьте ложное срабатывание в AppSec.",
             evidence_refs=[hit.url] if hit.url else [],
-            estimated_score_impact=hit.penalty,
+            estimated_score_impact=find_impact(
+                _submetric_key(hit),
+                SECURITY_SUBMETRIC_WEIGHTS,
+                submetric_scores,
+            ),
         )
         for hit in hits
     ]
@@ -195,7 +242,8 @@ def _build_findings(scan: Scan, hits: list[_GroupHit]) -> None:
 
 
 def _save_scored(scan: Scan, hits: list[_GroupHit], scan_uuid: str) -> HealthScore:
-    total = _score(hits)
+    metrics = _metrics(hits)
+    total, data_completeness, submetric_scores = score_security_category(metrics)
     critical_count = sum(1 for hit in hits if hit.severity == "critical")
     high_count = sum(1 for hit in hits if hit.severity == "high")
 
@@ -233,14 +281,14 @@ def _save_scored(scan: Scan, hits: list[_GroupHit], scan_uuid: str) -> HealthSco
                 source_reference=high_ref[:500] if high_count else "",
             ),
         )
-        _build_findings(scan, hits)
+        _build_findings(scan, hits, submetric_scores)
         health_score, _ = HealthScore.objects.update_or_create(
             scan=scan,
             category=CATEGORY,
             defaults=dict(
                 total=total,
                 weight_used=CATEGORY_WEIGHT,
-                data_completeness=1.0,
+                data_completeness=data_completeness,
                 raw_metrics={
                     "scan_uuid": scan_uuid,
                     "open_critical_count": critical_count,
@@ -248,6 +296,7 @@ def _save_scored(scan: Scan, hits: list[_GroupHit], scan_uuid: str) -> HealthSco
                     "transitive_critical_count": sum(
                         1 for hit in hits if hit.severity == "critical" and hit.transitive
                     ),
+                    "submetric_scores": submetric_scores,
                 },
             ),
         )

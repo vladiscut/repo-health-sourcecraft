@@ -45,8 +45,11 @@ from health.scoring import (
     ACTIVITY_CATEGORY_SCORE_SEVERITY_BUMP_THRESHOLD,
     ACTIVITY_LOOKBACK_DAYS,
     ACTIVITY_RECENT_ACTIVITY_STALE_DAYS,
+    ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS,
+    ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS,
     bump_severity,
     CATEGORY_WEIGHTS,
+    find_impact,
     score_activity_category,
 )
 from integrations.sourcecraft import SourceCraftClient, SourceCraftError
@@ -354,8 +357,15 @@ def _build_findings(
     metrics: _ActivityMetrics,
     category_score: int | None,
     include_commits: bool,
+    submetric_scores: dict[str, float],
 ) -> None:
     Finding.objects.filter(scan=scan, category=CATEGORY).delete()
+
+    weights = (
+        ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS
+        if include_commits
+        else ACTIVITY_SUBMETRIC_WEIGHTS_WITHOUT_COMMITS
+    )
 
     findings: list[Finding] = []
 
@@ -368,7 +378,7 @@ def _build_findings(
             detail=f"Последняя известная активность была около {age_days} дней назад (источник: {metrics.last_activity_source}).",
             recommendation="Проверьте актуальность проекта, backlog и владельцев активных направлений.",
             evidence_refs=[metrics.last_activity_source, metrics.last_activity_at.isoformat() if metrics.last_activity_at else ""],
-            estimated_score_impact=8,
+            estimated_score_impact=find_impact("recent_activity", weights, submetric_scores),
         ))
 
     if (
@@ -382,7 +392,7 @@ def _build_findings(
             detail="В истории коммитов дефолтной ветки за последние 30 дней не найдено ни одного коммита.",
             recommendation="Проверьте, ведётся ли разработка в этой ветке — возможно, изменения идут в другую ветку или через форки.",
             evidence_refs=["commits:30d"],
-            estimated_score_impact=4,
+            estimated_score_impact=find_impact("commits", weights, submetric_scores),
         ))
 
     if (
@@ -396,7 +406,7 @@ def _build_findings(
             detail="За последние 30 дней не найдено merge requests, созданных, обновлённых, объединённых или закрытых.",
             recommendation="Проверьте, соответствует ли фактический процесс разработки ожидаемому review/workflow-процессу.",
             evidence_refs=["merge_requests:30d"],
-            estimated_score_impact=4,
+            estimated_score_impact=find_impact("merge_requests", weights, submetric_scores),
         ))
 
     if metrics.releases_total is not None and metrics.releases_total > 0 and metrics.releases_30d == 0:
@@ -407,7 +417,7 @@ def _build_findings(
             detail=f"Всего найдено {metrics.releases_total} релизов, но за последние 30 дней новых релизов не обнаружено.",
             recommendation="Проверьте график поставки и предсказуемость выпуска изменений, если проект предполагает регулярные релизы.",
             evidence_refs=["releases:30d"],
-            estimated_score_impact=2,
+            estimated_score_impact=find_impact("releases", weights, submetric_scores),
         ))
 
     if metrics.commits_fetch_error and metrics.commits_30d is None and include_commits:
@@ -462,7 +472,7 @@ def run_activity_scan(
 
     with transaction.atomic():
         _save_metric_samples(scan, metrics)
-        _build_findings(scan, metrics, score, include_commits=include_commits)
+        _build_findings(scan, metrics, score, include_commits=include_commits, submetric_scores=submetric_scores)
 
         health_score, _ = HealthScore.objects.update_or_create(
             scan=scan,

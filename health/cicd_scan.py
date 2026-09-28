@@ -19,7 +19,12 @@ from django.db import transaction
 
 from core.utils import parse_datetime
 from health.models import Finding, HealthScore, MetricSample, Profile, Scan
-from health.scoring import CATEGORY_WEIGHTS, scale, weighted_submetric_score
+from health.scoring import (
+    CATEGORY_WEIGHTS,
+    CICD_SUBMETRIC_WEIGHTS,
+    scale,
+    weighted_submetric_score,
+)
 from health.tree_cache import get_repository_tree_cached
 from integrations.sourcecraft import SourceCraftClient, SourceCraftError
 
@@ -29,15 +34,9 @@ CATEGORY = MetricSample.Category.CI_CD
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
 
 CI_CONFIG_PATH = ".sourcecraft/ci.yaml"
-NO_CONFIG_SCORE = 15
-CONFIG_ONLY_SCORE = 40
 
-SUCCESS_RATE_WEIGHT = 0.75
-DURATION_WEIGHT = 0.25
-SUBMETRIC_WEIGHTS = {
-    "success_rate": SUCCESS_RATE_WEIGHT,
-    "duration": DURATION_WEIGHT,
-}
+# CICD_SUBMETRIC_WEIGHTS импортируется из health.scoring, чтобы он был
+# частью единой SUBMETRIC_WEIGHTS_BY_CATEGORY без циклического импорта.
 
 DURATION_WORST_MINUTES = 60.0
 DURATION_BEST_MINUTES = 5.0
@@ -187,20 +186,26 @@ def _collect_runs(runs: list[dict[str, Any]], org_slug: str, repo_slug: str) -> 
     return stats
 
 
-def _score(stats: _RunStats) -> tuple[int, float, dict[str, float]]:
-    submetric_scores: dict[str, float] = {}
-    if stats.success_rate is not None:
+def _score(
+    stats: _RunStats | None,
+    config_present: bool,
+) -> tuple[int | None, float, dict[str, float]]:
+    submetric_scores: dict[str, float] = {
+        # Конфиг всегда участвует в формуле: отсутствие = 0 баллов.
+        "ci_config_present": 100.0 if config_present else 0.0,
+    }
+    if stats is not None and stats.success_rate is not None:
         submetric_scores["success_rate"] = scale(stats.success_rate, worst=0.0, best=1.0)
-    if stats.median_duration_minutes is not None:
+    if stats is not None and stats.median_duration_minutes is not None:
         submetric_scores["duration"] = scale(
             stats.median_duration_minutes,
             worst=DURATION_WORST_MINUTES,
             best=DURATION_BEST_MINUTES,
         )
-    if not submetric_scores:
-        return CONFIG_ONLY_SCORE, 0.0, submetric_scores
-    total, completeness = weighted_submetric_score(submetric_scores, SUBMETRIC_WEIGHTS)
-    return total if total is not None else CONFIG_ONLY_SCORE, completeness, submetric_scores
+    total, completeness = weighted_submetric_score(
+        submetric_scores, CICD_SUBMETRIC_WEIGHTS
+    )
+    return total, completeness, submetric_scores
 
 
 def _build_findings(
@@ -345,13 +350,14 @@ def run_cicd_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
         return _save_unavailable(scan, str(exc))
 
     if not _config_in_tree(tree):
+        total, completeness, submetric_scores = _score(None, config_present=False)
         return _save_scored(
             scan,
-            total=NO_CONFIG_SCORE,
-            data_completeness=1.0,
+            total=total,
+            data_completeness=completeness,
             config_present=False,
             stats=None,
-            submetric_scores={},
+            submetric_scores=submetric_scores,
             runs_reason="нет .sourcecraft/ci.yaml",
         )
 
@@ -360,20 +366,23 @@ def run_cicd_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
     except SourceCraftError as exc:
         if exc.status_code == 404:
             logger.info(f"Список CI-прогонов недоступен для {repository}: {exc}")
+            total, completeness, submetric_scores = _score(
+                None, config_present=True
+            )
             return _save_scored(
                 scan,
-                total=CONFIG_ONLY_SCORE,
-                data_completeness=0.0,
+                total=total,
+                data_completeness=completeness,
                 config_present=True,
                 stats=None,
-                submetric_scores={},
+                submetric_scores=submetric_scores,
                 runs_reason="список прогонов не найден",
             )
         logger.error(f"Не удалось получить CI-прогоны {repository}: {exc}")
         return _save_unavailable(scan, str(exc))
 
     stats = _collect_runs(runs, repository.org_slug, repository.repo_slug)
-    total, completeness, submetric_scores = _score(stats)
+    total, completeness, submetric_scores = _score(stats, config_present=True)
     runs_reason = "" if stats.success_rate is not None else "нет завершённых прогонов"
     return _save_scored(
         scan,

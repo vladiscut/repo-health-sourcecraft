@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.utils import timezone
 
-from health.cicd_scan import run
+from health.cicd_scan import CICD_SUBMETRIC_WEIGHTS, run
 from health.models import Finding, HealthScore, MetricSample, Scan
 from health.tests.helpers import make_profile, make_repo
 from integrations.sourcecraft import SourceCraftError
@@ -78,7 +78,9 @@ class CicdScanTests(TestCase):
         scan.refresh_from_db()
 
         self.assertIsNotNone(score.total)
-        self.assertEqual(score.total, 15)
+        # Конфиг отсутствует -> ci_config_present = 0 -> total 0.
+        self.assertEqual(score.total, 0)
+        self.assertEqual(score.raw_metrics["submetric_scores"], {"ci_config_present": 0.0})
         self.assertTrue(config.is_available)
         self.assertFalse(config.value)
         self.assertEqual(scan.status, Scan.Status.RUNNING)
@@ -144,7 +146,7 @@ class CicdScanTests(TestCase):
         red_score = HealthScore.objects.get(pk=red_id).total
         red_finding = Finding.objects.get(scan=red, category=MetricSample.Category.CI_CD)
 
-        self.assertGreaterEqual(green_score - red_score, 25)
+        self.assertGreaterEqual(green_score - red_score, 20)
         self.assertIn("/repos/acme/demo-red/cicd/runs/", red_finding.evidence_refs[0])
 
     def test_runs_not_found_keeps_config_score(self):
@@ -160,7 +162,11 @@ class CicdScanTests(TestCase):
         score = HealthScore.objects.get(pk=score_id)
         rate = MetricSample.objects.get(scan=scan, metric_key="ci_success_rate")
 
-        self.assertEqual(score.total, 40)
+        # Конфиг есть -> ci_config_present = 100, других под-метрик нет.
+        self.assertEqual(score.total, 100)
+        self.assertEqual(
+            score.raw_metrics["submetric_scores"], {"ci_config_present": 100.0}
+        )
         self.assertFalse(rate.is_available)
 
     def test_forbidden_runs_are_missing_data(self):
@@ -175,3 +181,6 @@ class CicdScanTests(TestCase):
 
         score = HealthScore.objects.get(pk=score_id)
         self.assertIsNone(score.total)
+
+    def test_cicd_submetric_weights_sum_to_one(self):
+        self.assertAlmostEqual(sum(CICD_SUBMETRIC_WEIGHTS.values()), 1.0)

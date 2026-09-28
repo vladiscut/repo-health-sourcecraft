@@ -40,6 +40,11 @@ logger = logging.getLogger(__name__)
 # Веса категорий — единственный источник: health.scoring.CATEGORY_WEIGHTS.
 ALL_CATEGORIES = list(CATEGORY_WEIGHTS.keys())
 
+# Порог «предварительного» Score (design.md D4): если суммарный вес
+# рассчитанных категорий ниже него, Score публикуется как черновой и
+# не попадает в публичный рейтинг.
+PREVIEW_SCORE_WEIGHT_THRESHOLD = 0.5
+
 # Сколько Scan может провести в PENDING/RUNNING, прежде чем
 # мы считаем его протухшим
 SCAN_STALE_AFTER = datetime.timedelta(
@@ -371,12 +376,19 @@ def aggregate_scan(scan_id: int) -> dict:
     missing_categories = [c for c in ALL_CATEGORIES if c not in by_category]
 
     scored = {c: hs for c, hs in by_category.items() if hs.total is not None}
-    weight_sum = sum(CATEGORY_WEIGHTS[c] for c in scored)
+    # Вклад категории пропорционален её полноте: категория с
+    # data_completeness < 1.0 влияет на итог слабее, чем полностью
+    # измеренная (см. design.md D2).
+    effective_weights = {
+        c: CATEGORY_WEIGHTS[c] * hs.data_completeness
+        for c, hs in scored.items()
+    }
+    weight_sum = sum(effective_weights.values())
 
     if weight_sum > 0:
         overall_score = 0.0
         for category, hs in scored.items():
-            renormalized_weight = CATEGORY_WEIGHTS[category] / weight_sum
+            renormalized_weight = effective_weights[category] / weight_sum
             overall_score += hs.total * renormalized_weight
             hs.weight_used = renormalized_weight
         overall_score = round(overall_score)
@@ -398,10 +410,33 @@ def aggregate_scan(scan_id: int) -> dict:
     else:
         scan.status = Scan.Status.SUCCESS
 
+    # score_confidence — агрегированная полнота данных по всем
+    # категориям (см. design.md D3). Вклад категории пропорционален
+    # её весу; отсутствующие категории учитываются как полностью
+    # неполные (data_completeness = 0).
+    total_category_weight = sum(CATEGORY_WEIGHTS[c] for c in ALL_CATEGORIES)
+    confidence_numerator = sum(
+        CATEGORY_WEIGHTS[c] * hs.data_completeness
+        for c, hs in by_category.items()
+        if c in CATEGORY_WEIGHTS
+    )
+    score_confidence = (
+        confidence_numerator / total_category_weight
+        if total_category_weight > 0
+        else 0.0
+    )
+
+    # Score помечается предварительным, если суммарный вес
+    # рассчитанных категорий ниже порога (см. design.md D4).
+    scored_weight = sum(CATEGORY_WEIGHTS[c] for c in scored)
+    is_preliminary = scored_weight < PREVIEW_SCORE_WEIGHT_THRESHOLD
+
     scan.finished_at = timezone.now()
     scan.raw = {
         **scan.raw,
         "health_score": overall_score,
+        "score_confidence": score_confidence,
+        "is_preliminary": is_preliminary,
         "category_scores": {
             c: (
                 hs.total if hs.total is not None else "Нет данных"

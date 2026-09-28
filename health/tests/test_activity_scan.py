@@ -126,7 +126,7 @@ class BuildFindingsTests(TestCase):
             last_activity_source="commits",
             last_activity_at=timezone.now(),
         )
-        _build_findings(self.scan, metrics, 50, include_commits=False)
+        _build_findings(self.scan, metrics, 50, include_commits=False, submetric_scores={})
         titles = set(
             Finding.objects.filter(scan=self.scan).values_list("title", flat=True)
         )
@@ -139,12 +139,12 @@ class BuildFindingsTests(TestCase):
             releases_30d=1,
             merge_requests_30d=2,
         )
-        _build_findings(self.scan, metrics, 90, include_commits=False)
+        _build_findings(self.scan, metrics, 90, include_commits=False, submetric_scores={})
         self.assertEqual(Finding.objects.filter(scan=self.scan).count(), 0)
 
     def test_insufficient_data_finding(self):
         metrics = _ActivityMetrics()
-        _build_findings(self.scan, metrics, None, include_commits=False)
+        _build_findings(self.scan, metrics, None, include_commits=False, submetric_scores={})
         titles = set(
             Finding.objects.filter(scan=self.scan).values_list("title", flat=True)
         )
