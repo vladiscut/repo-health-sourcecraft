@@ -181,13 +181,15 @@ button.busy + .loader,
     margin: 0 -8px;
 }
 .bar-cat > summary {
+    display: block;
     list-style: none;
     cursor: pointer;
 }
 .bar-cat > summary::-webkit-details-marker { display: none; }
 .bar-cat > summary::marker { content: ""; }
-.bar-cat > summary:hover { background: var(--panel); }
-.bar-cat > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.bar-cat > summary:hover .bar-head { background: var(--panel); }
+.bar-cat > summary:focus-visible .bar-head { outline: 1px solid var(--accent); outline-offset: 2px; }
+.bar-cat:not([open]) > .parts { display: none; }
 .chevron {
     width: 0;
     height: 0;

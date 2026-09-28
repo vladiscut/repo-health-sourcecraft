@@ -71,19 +71,19 @@
         <li>
             {% if row.parts %}
             <details class="bar-cat">
-                <summary class="bar-head">
-            {% else %}
-            <div class="bar-head">
+                <summary>
             {% endif %}
-                <span class="chevron{% if not row.parts %} chevron-spacer{% endif %}" aria-hidden="true"></span>
-                <span>{{ row.label }}</span>
-                {% if row.value is None %}
-                <div class="bar"></div>
-                <b class="muted">Нет данных</b>
-                {% else %}
-                <div class="bar"><i style="width: {{ row.value }}%"></i></div>
-                <b>{{ row.value }}</b>
-                {% endif %}
+                <span class="bar-head">
+                    <span class="chevron{% if not row.parts %} chevron-spacer{% endif %}" aria-hidden="true"></span>
+                    <span>{{ row.label }}</span>
+                    {% if row.value is None %}
+                    <span class="bar"></span>
+                    <b class="muted">Нет данных</b>
+                    {% else %}
+                    <span class="bar"><i style="width: {{ row.value }}%"></i></span>
+                    <b>{{ row.value }}</b>
+                    {% endif %}
+                </span>
             {% if row.parts %}
                 </summary>
                 <ul class="parts">
@@ -99,8 +99,6 @@
                     {% endfor %}
                 </ul>
             </details>
-            {% else %}
-            </div>
             {% endif %}
         </li>
         {% endfor %}
