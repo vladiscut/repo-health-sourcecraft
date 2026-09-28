@@ -3,9 +3,10 @@
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, override_settings
-from git import Repo
+from git import GitCommandError, Repo
 
 from integrations.git import SourceCraftGitClient
 from integrations.sourcecraft import SourceCraftError
@@ -211,3 +212,32 @@ class GetMarkerCommitDatesTests(SimpleTestCase):
                 client = SourceCraftGitClient(token="dummy")
                 with self.assertRaises(SourceCraftError):
                     client.get_marker_commit_dates(1, "HEAD")
+
+
+class CloneFailureTests(SimpleTestCase):
+    def test_missing_base_url_raises_before_git(self):
+        client = SourceCraftGitClient(token="dummy", semaphore=MagicMock())
+        with override_settings(SOURCECRAFT_GIT_BASE_URL=""):
+            with self.assertRaises(SourceCraftError) as ctx:
+                client.clone("org", "repo", "main", 1)
+        self.assertIn("SOURCECRAFT_GIT_BASE_URL", str(ctx.exception))
+
+    def test_git_error_is_not_masked_by_close(self):
+        semaphore = MagicMock()
+        client = SourceCraftGitClient(token="dummy", semaphore=semaphore)
+        askpass = MagicMock()
+        with TemporaryDirectory() as tmp, override_settings(
+            SOURCECRAFT_GIT_BASE_URL="https://git.example",
+            SCAN_REPO_DIR=tmp,
+        ), patch(
+            "integrations.git._build_git_env",
+            return_value=({}, askpass),
+        ), patch(
+            "integrations.git.Repo.clone_from",
+            side_effect=GitCommandError(["git", "clone"], 128, stderr="fatal"),
+        ):
+            with self.assertRaises(SourceCraftError) as ctx:
+                client.clone("org", "repo", "main", 1)
+
+        self.assertIsInstance(ctx.exception.__cause__, GitCommandError)
+        askpass.unlink.assert_called_once()

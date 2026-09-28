@@ -1,8 +1,12 @@
 {% extends "health/base.html" %}
+{% load static %}
 {% block title %}{{ repo.org_slug }}/{{ repo.repo_slug }} · Repo Health{% endblock %}
+{% block og_title %}{{ repo.org_slug }}/{{ repo.repo_slug }} · Repo Health{% endblock %}
+{% block og_description %}{% if repo.description %}{{ repo.description }}{% else %}Оценка здоровья репозитория {{ repo.org_slug }}/{{ repo.repo_slug }} на SourceCraft.{% endif %}{% endblock %}
 {% block content %}
 <p class="crumb"><a href="{{ back_url }}">← К списку</a></p>
-<div class="hero">
+<div class="hero"
+     {% if scan_in_progress %}data-scan-status-url="{{ scan_status_url }}"{% endif %}>
     <div>
         <h1>{{ repo.org_slug }}/{{ repo.repo_slug }}</h1>
         <p class="lead">{{ repo.description }}</p>
@@ -13,24 +17,32 @@
             · 👍 {{ repo.likes }} · ❤️ {{ repo.hearts }} · 💎 {{ repo.diamonds }}
             · {{ repo.forks }} форков
             {% if repo.url %}
-            · <a href="{{ repo.url }}">SourceCraft</a>
+            · <a href="{{ repo.url }}">ссылка на SourceCraft</a>
             {% endif %}
         </p>
+        {% if analyzed_at and not scan_in_progress %}
+        <p class="muted">Дата анализа: {{ analyzed_at|date:"d.m.Y H:i" }}</p>
+        {% endif %}
     </div>
-    {% if score %}
+    {% if scan_in_progress %}
+    <div class="hero-score">
+        <span class="loader visible" aria-hidden="true"></span>
+        <div class="muted">Идёт анализ…</div>
+    </div>
+    {% elif score and score.total is not None %}
     <div class="hero-score">
         <div class="score big {{ score.level }}">{{ score.total }}</div>
         <div class="muted">Repo Health Score</div>
     </div>
     {% else %}
     <div class="hero-score">
-        <div class="muted">Score пока нет — скан метрик не подключён</div>
+        <div class="muted">Score пока нет</div>
     </div>
     {% endif %}
 </div>
 
 <div class="toolbar">
-    {% if can_analyze %}
+    {% if can_analyze and not scan_in_progress %}
     <form method="post" action="{% url 'health:repo-rescan' repo.org_slug repo.repo_slug %}" onsubmit="this.querySelector('button').classList.add('busy')">
         {% csrf_token %}
         {% if from_me %}<input type="hidden" name="from" value="me">{% endif %}
@@ -38,41 +50,80 @@
         <button type="submit">Запустить анализ</button>
         <span class="loader" aria-hidden="true"></span>
     </form>
+    {% elif scan_in_progress %}
+    <span class="muted">Анализ уже идёт — запуск и выгрузка недоступны, пока скан в очереди или выполняется.</span>
     {% endif %}
+    {% if not scan_in_progress %}
     <a class="btn ghost" href="{% url 'health:repo-export' repo.org_slug repo.repo_slug 'md' %}">Скачать Markdown</a>
-    <a class="btn ghost" href="{% url 'health:repo-export' repo.org_slug repo.repo_slug 'pdf' %}">Скачать PDF</a>
+    {% endif %}
 </div>
 
-{% if score %}
+{% if not scan_in_progress and score %}
 <section>
     <h2>Почему такой балл</h2>
     <ul class="bars">
-        {% for name, value in score.categories %}
+        {% for row in category_rows %}
         <li>
-            <span>{{ name }}</span>
-            {% if value is None %}
+            <span>{{ row.label }}</span>
+            {% if row.value is None %}
             <div class="bar"></div>
             <b class="muted">Нет данных</b>
             {% else %}
-            <div class="bar"><i style="width: {{ value }}%"></i></div>
-            <b>{{ value }}</b>
+            <div class="bar"><i style="width: {{ row.value }}%"></i></div>
+            <b>{{ row.value }}</b>
+            {% endif %}
+            {% if row.parts %}
+            <ul class="parts">
+                {% for part in row.parts %}
+                <li>
+                    <span>
+                        <span class="part-label">{{ part.label }}</span>
+                        {% if part.share != None %}<span class="part-meta">· вес {{ part.share }}%</span>{% endif %}
+                        {% if part.detail %}<span class="part-meta">· {{ part.detail }}</span>{% endif %}
+                    </span>
+                    {% if part.score != None %}<b>{{ part.score }}</b>{% endif %}
+                </li>
+                {% endfor %}
+            </ul>
             {% endif %}
         </li>
         {% endfor %}
     </ul>
+    {% if has_null_categories %}
+    <p class="muted">Категории без данных не обнуляют итог: их вес перераспределяется между категориями, где балл есть.</p>
+    {% endif %}
 </section>
+
+{% if strengths or weaknesses %}
+<section>
+    <h2>Сильные и слабые стороны</h2>
+    {% if strengths %}
+    <p><b>Сильные:</b> {{ strengths|join:", " }}</p>
+    {% endif %}
+    {% if weaknesses %}
+    <p><b>Слабые:</b> {{ weaknesses|join:", " }}</p>
+    {% endif %}
+</section>
+{% endif %}
 {% endif %}
 
 <section>
     <h2>Находки и рекомендации</h2>
-    {% if findings %}
+    {% if scan_in_progress %}
+    <p class="muted">Дождитесь окончания анализа.</p>
+    {% elif findings %}
     <ul class="findings">
         {% for finding in findings %}
         <li class="finding {{ finding.severity }}">
             <strong>{{ finding.title }}</strong>
-            <span class="tag">{{ finding.category }} · {{ finding.severity }}</span>
+            <span class="tag">{{ finding.category }} · {{ finding.get_severity_display }}</span>
             <p>{{ finding.detail }}</p>
             {% if finding.recommendation %}<p class="rec">{{ finding.recommendation }}</p>{% endif %}
+            {% for ref in finding.evidence_refs %}
+            {% if ref|slice:":4" == "http" %}
+            <p><a href="{{ ref }}">{{ ref }}</a></p>
+            {% endif %}
+            {% endfor %}
         </li>
         {% endfor %}
     </ul>
@@ -94,5 +145,10 @@
         {% endfor %}
     </ol>
 </section>
+{% endif %}
+{% endblock %}
+{% block extra_js %}
+{% if scan_in_progress %}
+<script src="{% static 'health/scan_status.js' %}" defer></script>
 {% endif %}
 {% endblock %}

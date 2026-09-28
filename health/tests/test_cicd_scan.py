@@ -144,10 +144,67 @@ class CicdScanTests(TestCase):
 
         green_score = HealthScore.objects.get(pk=green_id).total
         red_score = HealthScore.objects.get(pk=red_id).total
-        red_finding = Finding.objects.get(scan=red, category=MetricSample.Category.CI_CD)
+        red_refs = [
+            ref
+            for item in Finding.objects.filter(scan=red, category=MetricSample.Category.CI_CD)
+            for ref in item.evidence_refs
+        ]
 
-        self.assertGreaterEqual(green_score - red_score, 20)
-        self.assertIn("/repos/acme/demo-red/cicd/runs/", red_finding.evidence_refs[0])
+        self.assertGreaterEqual(green_score - red_score, 25)
+        self.assertTrue(
+            any(ref.startswith("https://sourcecraft.dev/acme/demo-red/cicd/runs/") for ref in red_refs)
+        )
+
+    def test_successful_last_run_is_a_finding_without_score_penalty(self):
+        finished = timezone.now()
+        started = finished - timedelta(minutes=5)
+        runs = [_run("success", "green-1", started, finished)]
+        scan = self._scan(self.user)
+
+        with patch(
+            "health.cicd_scan.SourceCraftClient",
+            return_value=self._client(_tree(".sourcecraft/ci.yaml"), runs),
+        ):
+            score_id = run(scan.pk)
+
+        score = HealthScore.objects.get(pk=score_id)
+        finding = Finding.objects.get(
+            scan=scan,
+            category=MetricSample.Category.CI_CD,
+            title="Последний прогон CI успешный",
+        )
+
+        self.assertEqual(score.total, 100)
+        self.assertEqual(finding.estimated_score_impact, 0)
+        self.assertEqual(
+            finding.evidence_refs,
+            ["https://sourcecraft.dev/acme/demo/cicd/runs/green-1"],
+        )
+
+    def test_run_page_url_prefers_api_web_url(self):
+        finished = timezone.now()
+        started = finished - timedelta(minutes=5)
+        run_payload = _run("failed", "red-1", started, finished)
+        run_payload["web_url"] = "https://sourcecraft.dev/acme/demo/cicd/runs/from-api"
+        scan = self._scan(self.user)
+
+        with patch(
+            "health.cicd_scan.SourceCraftClient",
+            return_value=self._client(_tree(".sourcecraft/ci.yaml"), [run_payload]),
+        ):
+            run(scan.pk)
+
+        finding = Finding.objects.get(
+            scan=scan,
+            category=MetricSample.Category.CI_CD,
+            title="Последний прогон CI упал",
+        )
+        self.assertEqual(finding.estimated_score_impact, 0)
+        self.assertEqual(
+            finding.evidence_refs,
+            ["https://sourcecraft.dev/acme/demo/cicd/runs/from-api"],
+        )
+>>>>>>> master
 
     def test_runs_not_found_keeps_config_score(self):
         scan = self._scan(self.user)

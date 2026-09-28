@@ -141,6 +141,55 @@ def _is_effectively_empty(repository: Repository) -> bool:
     return bool(repository.is_empty) or not repository.default_branch
 
 
+def _claim_pending_or_create_running(
+    repository: Repository,
+    triggered_by: str,
+    user_id: int | None,
+    commit_sha: str,
+) -> Scan:
+    """Берёт PENDING-заглушку с карточки или создаёт новый RUNNING Scan.
+
+    Карточка создаёт PENDING сразу при «Запустить анализ», чтобы UI не
+    показывал старый Score, пока Celery ещё не дошёл до оркестратора.
+    """
+
+    pending = (
+        Scan.objects.filter(
+            repository=repository,
+            status=Scan.Status.PENDING,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if pending is not None:
+        pending.status = Scan.Status.RUNNING
+        pending.triggered_by = triggered_by
+        pending.triggered_by_user_id = user_id
+        pending.commit_sha_at_analysis = commit_sha or ""
+        pending.save(
+            update_fields=[
+                "status",
+                "triggered_by",
+                "triggered_by_user_id",
+                "commit_sha_at_analysis",
+            ]
+        )
+        return pending
+
+    try:
+        return Scan.objects.create(
+            repository=repository,
+            status=Scan.Status.RUNNING,
+            triggered_by=triggered_by,
+            triggered_by_user_id=user_id,
+            commit_sha_at_analysis=commit_sha or "",
+        )
+    except IntegrityError as exc:
+        raise ActiveScanExistsError(
+            f"Активный Scan для репозитория {repository.id} уже существует"
+        ) from exc
+
+
 def _create_empty_repo_scan(
     repository: Repository,
     triggered_by: str,
@@ -160,7 +209,37 @@ def _create_empty_repo_scan(
             f"Репозиторий {repository}: снят зависший Scan ({reaped} шт.)"
         )
 
-    try:
+    pending = (
+        Scan.objects.filter(
+            repository=repository,
+            status=Scan.Status.PENDING,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if pending is not None:
+        scan = pending
+        scan.triggered_by = triggered_by
+        scan.triggered_by_user_id = user_id
+        scan.commit_sha_at_analysis = ""
+        scan.status = Scan.Status.SUCCESS
+        scan.save(
+            update_fields=[
+                "triggered_by",
+                "triggered_by_user_id",
+                "commit_sha_at_analysis",
+                "status",
+            ]
+        )
+    else:
+        running = Scan.objects.filter(
+            repository=repository,
+            status=Scan.Status.RUNNING,
+        ).exists()
+        if running:
+            raise ActiveScanExistsError(
+                f"Активный Scan для репозитория {repository.id} уже существует"
+            )
         scan = Scan.objects.create(
             repository=repository,
             status=Scan.Status.SUCCESS,
@@ -168,10 +247,6 @@ def _create_empty_repo_scan(
             triggered_by_user_id=user_id,
             commit_sha_at_analysis="",
         )
-    except IntegrityError as exc:
-        raise ActiveScanExistsError(
-            f"Активный Scan для репозитория {repository.id} уже существует"
-        ) from exc
 
     reason = (
         "репозиторий пуст is_empty=True"
@@ -299,18 +374,12 @@ def start_repository_scan(
             f"Репозиторий {repository}: снят зависший Scan ({reaped} шт.)"
         )
 
-    try:
-        scan = Scan.objects.create(
-            repository=repository,
-            status=Scan.Status.RUNNING,
-            triggered_by=triggered_by,
-            triggered_by_user_id=user_id,
-            commit_sha_at_analysis=current_hash or last_commit,
-        )
-    except IntegrityError as exc:
-        raise ActiveScanExistsError(
-            f"Активный Scan для репозитория {repository_id} уже существует"
-        ) from exc
+    scan = _claim_pending_or_create_running(
+        repository,
+        triggered_by,
+        user_id,
+        current_hash or last_commit or "",
+    )
 
     category_tasks = []
     if user_id:

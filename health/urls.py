@@ -29,6 +29,11 @@ urlpatterns = [
         name="repo-rescan",
     ),
     path(
+        "repos/<str:org_slug>/<str:repo_slug>/scan-status/",
+        views.RepoScanStatusView.as_view(),
+        name="repo-scan-status",
+    ),
+    path(
         "repos/<str:org_slug>/<str:repo_slug>/export/<str:fmt>/",
         views.RepoExportView.as_view(),
         name="repo-export",

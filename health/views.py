@@ -3,8 +3,9 @@
 from urllib.parse import urlencode
 
 from django.contrib import messages
+from django.db import IntegrityError
 from django.db.models import F, Prefetch, Q
-from django.http import Http404, HttpRequest, HttpResponse
+from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -12,13 +13,17 @@ from django.views import View
 from django.views.generic import DetailView, ListView
 
 from core.celery import USER_QUEUE_NAME, SCHEDULE_QUEUE_NAME
-from health.models import Repository, Scan, UserRepositoryAccess
-from health.scoring import present_scores
+from health.models import Finding, Repository, Scan, UserRepositoryAccess
+from health.reports import build_markdown_report
+from health.score_breakdown import rows_for_scores
+from health.scoring import CATEGORY_LABELS, present_scores
 from health.tasks import task_check_and_scan_repository
 from health.user_repository import user_can_access_repository
 
 
 PAGE_SIZE = 50
+STRONG_CATEGORY_THRESHOLD = 80
+WEAK_CATEGORY_THRESHOLD = 50
 
 
 SORTS = {
@@ -45,14 +50,63 @@ def _score_map(scan: Scan | None) -> dict[str, int | None]:
     return {row.category: row.total for row in scan.scores.all()}
 
 
+def _full_totals(scan: Scan | None) -> dict[str, int | None]:
+    totals = {key: None for key in CATEGORY_LABELS}
+    totals.update(_score_map(scan))
+    return totals
+
+
 def _present(scan: Scan | None) -> dict | None:
-    totals = _score_map(scan)
-    if not totals:
+    if scan is None:
         return None
-    presented = present_scores(totals)
-    if presented["total"] is None:
+    presented = present_scores(_full_totals(scan))
+    if presented["total"] is None and not _score_map(scan):
         return None
     return presented
+
+
+def _active_scan(repo: Repository) -> Scan | None:
+    return (
+        repo.scans.filter(
+            status__in=[Scan.Status.PENDING, Scan.Status.RUNNING],
+        )
+        .order_by("-created_at")
+        .first()
+    )
+
+
+def _user_can_run_personal_scan(user, repo: Repository) -> bool:
+    if not getattr(user, "is_authenticated", False):
+        return False
+    if repo.visibility == Repository.VisibilityType.PUBLIC:
+        return UserRepositoryAccess.objects.filter(
+            user=user,
+            repository=repo,
+        ).exists()
+    return True
+
+
+def _strengths_and_weaknesses(scan: Scan | None, presented: dict | None):
+    strengths: list[str] = []
+    weaknesses: list[str] = []
+    if presented is None:
+        return strengths, weaknesses
+
+    for label, value in presented["categories"]:
+        if value is None:
+            weaknesses.append(f"{label}: нет данных")
+        elif value >= STRONG_CATEGORY_THRESHOLD:
+            strengths.append(f"{label}: {value}")
+        elif value < WEAK_CATEGORY_THRESHOLD:
+            weaknesses.append(f"{label}: {value}")
+
+    if scan is not None:
+        for finding in scan.findings.filter(
+            severity__in=[Finding.Severity.HIGH, Finding.Severity.CRITICAL],
+        )[:5]:
+            weaknesses.append(finding.title)
+
+    return strengths, weaknesses
 
 
 def _list_query(**params: str) -> str:
@@ -248,7 +302,11 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
         if request.GET.get("scan", "").lower() in {"1", "true", "yes"}:
             repo = self.get_repository()
             task_check_and_scan_repository.apply_async(
-                args=[repo.id, None, True],
+                kwargs={
+                    "repository_id": repo.id,
+                    "user_id": None,
+                    "force": True,
+                },
                 queue=SCHEDULE_QUEUE_NAME,
             )
             messages.info(request, "Плановый скан поставлен в очередь.")
@@ -258,36 +316,49 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         repo = self.object
-        scan = repo.latest_completed_scan()
+        active = _active_scan(repo)
+        scan_in_progress = active is not None
+        scan = None if scan_in_progress else repo.latest_completed_scan()
+        presented = None if scan_in_progress else _present(scan)
+        strengths, weaknesses = _strengths_and_weaknesses(scan, presented)
         history = []
         for item in (
             repo.scans
             .filter(status__in=[Scan.Status.SUCCESS, Scan.Status.PARTIAL])
             .prefetch_related("scores")[:12]
         ):
-            presented = _present(item)
+            item_presented = _present(item)
             history.append(
                 {
                     "finished_at": item.finished_at,
-                    "total": presented["total"] if presented else None,
+                    "total": item_presented["total"] if item_presented else None,
                 }
             )
-        if repo.visibility == Repository.VisibilityType.PUBLIC:
-            can_analyze = (
-                self.request.user.is_authenticated
-                and UserRepositoryAccess.objects.filter(
-                    user=self.request.user,
-                    repository=repo,
-                ).exists()
-            )
-        else:
-            can_analyze = True
+        personal = _user_can_run_personal_scan(self.request.user, repo)
+        can_analyze = (
+            personal
+            or repo.visibility == Repository.VisibilityType.PUBLIC
+        )
         from_me = _opened_from_personal_list(self.request)
+        has_null = bool(
+            presented
+            and any(value is None for _, value in presented["categories"])
+        )
         context.update(
             {
                 "scan": scan,
-                "score": _present(scan),
+                "score": presented,
+                "scan_in_progress": scan_in_progress,
+                "scan_status_url": reverse(
+                    "health:repo-scan-status",
+                    args=[repo.org_slug, repo.repo_slug],
+                ),
                 "findings": scan.findings.all() if scan else [],
+                "strengths": strengths,
+                "weaknesses": weaknesses,
+                "has_null_categories": has_null,
+                "category_rows": rows_for_scores(scan.scores.all()) if scan else [],
+                "analyzed_at": scan.finished_at if scan else None,
                 "history": history,
                 "can_analyze": can_analyze,
                 "from_me": from_me,
@@ -307,22 +378,92 @@ class RepoRescanView(RepositoryAccessMixin, View):
     def post(self, request, org_slug, repo_slug):
         repo = self.get_repository()
 
-        task_check_and_scan_repository.apply_async(
-            args=[repo.id, self.request.user.id, True],
-            queue=USER_QUEUE_NAME,
-        )
+        if _active_scan(repo) is not None:
+            messages.info(request, "Анализ этого репозитория уже идёт.")
+            return _repo_detail_redirect(request, org_slug, repo_slug)
 
-        messages.info(request, "Проверка поставлена в очередь.")
+        if _user_can_run_personal_scan(request.user, repo):
+            user_id = request.user.id
+            queue = USER_QUEUE_NAME
+            triggered_by = Scan.TriggeredBy.USER
+        elif repo.visibility == Repository.VisibilityType.PUBLIC:
+            user_id = None
+            queue = SCHEDULE_QUEUE_NAME
+            triggered_by = Scan.TriggeredBy.SCHEDULE
+        else:
+            raise Http404()
+
+        # PENDING сразу в БД: после редиректа карточка покажет loader,
+        # а не предыдущий успешный Score, пока Celery ещё не стартовал.
+        try:
+            Scan.objects.create(
+                repository=repo,
+                status=Scan.Status.PENDING,
+                triggered_by=triggered_by,
+                triggered_by_user_id=user_id,
+            )
+        except IntegrityError:
+            messages.info(request, "Анализ этого репозитория уже идёт.")
+            return _repo_detail_redirect(request, org_slug, repo_slug)
+
+        task_check_and_scan_repository.apply_async(
+            kwargs={
+                "repository_id": repo.id,
+                "user_id": user_id,
+                "force": True,
+            },
+            queue=queue,
+        )
+        messages.info(request, "Анализ поставлен в очередь.")
         return _repo_detail_redirect(request, org_slug, repo_slug)
+
+
+class RepoScanStatusView(RepositoryAccessMixin, View):
+    http_method_names = ["get"]
+
+    def get(self, request, org_slug, repo_slug):
+        repo = self.get_repository()
+        active = _active_scan(repo)
+        if active is not None:
+            return JsonResponse(
+                {
+                    "status": active.status,
+                    "scan_id": active.id,
+                }
+            )
+
+        latest = (
+            repo.scans.filter(
+                status__in=[
+                    Scan.Status.SUCCESS,
+                    Scan.Status.PARTIAL,
+                    Scan.Status.FAILED,
+                ]
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if latest is None:
+            return JsonResponse({"status": "ready", "scan_id": None})
+        if latest.status == Scan.Status.FAILED:
+            return JsonResponse({"status": "failed", "scan_id": latest.id})
+        return JsonResponse({"status": "ready", "scan_id": latest.id})
 
 
 class RepoExportView(RepositoryAccessMixin, View):
     http_method_names = ["get"]
 
     def get(self, request, org_slug, repo_slug, fmt):
-        self.get_repository()
+        repo = self.get_repository()
         if fmt not in {"md", "pdf"}:
             raise Http404("Неизвестный формат")
+
+        if _active_scan(repo) is not None:
+            messages.info(
+                request,
+                "Выгрузка недоступна, пока идёт анализ. Дождитесь завершения.",
+            )
+            return _repo_detail_redirect(request, org_slug, repo_slug)
 
         filename = _safe_filename(org_slug, repo_slug)
         if fmt == "pdf":
@@ -330,6 +471,10 @@ class RepoExportView(RepositoryAccessMixin, View):
             response["Content-Disposition"] = f'attachment; filename="{filename}.pdf"'
             return response
 
-        response = HttpResponse(b"", content_type="text/markdown; charset=utf-8")
+        body = build_markdown_report(repo)
+        response = HttpResponse(
+            body.encode("utf-8"),
+            content_type="text/markdown; charset=utf-8",
+        )
         response["Content-Disposition"] = f'attachment; filename="{filename}.md"'
         return response

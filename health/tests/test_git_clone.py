@@ -8,6 +8,7 @@ from django.test import TestCase
 from health.git_clone import run
 from health.models import Scan
 from health.tests.helpers import make_profile, make_repo
+from integrations.sourcecraft import SourceCraftError
 
 
 class GitCloneRunTests(TestCase):
@@ -46,3 +47,12 @@ class GitCloneRunTests(TestCase):
     def test_missing_scan_raises(self):
         with self.assertRaises(Scan.DoesNotExist):
             run(999999)
+
+    def test_clone_error_does_not_abort_scan_chain(self):
+        user = get_user_model().objects.create_user("owner2", password="x")
+        make_profile(user, sourcecraft_pat="user-pat-123")
+        scan = self._scan(user)
+
+        with patch("health.git_clone.SourceCraftGitClient") as client_cls:
+            client_cls.return_value.clone.side_effect = SourceCraftError("clone fail")
+            run(scan.pk)

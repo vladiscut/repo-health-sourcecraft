@@ -14,7 +14,6 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import quote
 
-from django.conf import settings
 from django.db import transaction
 
 from core.utils import parse_datetime
@@ -54,6 +53,8 @@ class _RunStats:
     success_rate: float | None = None
     median_duration_minutes: float | None = None
     last_red_url: str = ""
+    last_run_url: str = ""
+    last_run_status: str = ""
     durations: list[float] = field(default_factory=list)
 
 
@@ -130,14 +131,59 @@ def _config_in_tree(tree: list[dict[str, Any]]) -> bool:
     return False
 
 
-def _run_url(org_slug: str, repo_slug: str, slug: str) -> str:
-    base = settings.SOURCECRAFT_API_BASE_URL.rstrip("/")
-    return (
-        f"{base}/repos/"
-        f"{quote(org_slug, safe='')}/"
-        f"{quote(repo_slug, safe='')}/"
-        f"cicd/runs/{quote(slug, safe='')}"
-    )
+def _http_url(value: Any) -> str:
+    if isinstance(value, str) and value.startswith(("http://", "https://")):
+        return value
+    return ""
+
+
+def _explicit_page_url(run: dict[str, Any]) -> str:
+    for key in ("web_url", "html_url", "page_url"):
+        found = _http_url(run.get(key))
+        if found:
+            return found
+    links = run.get("links")
+    if isinstance(links, dict):
+        for key in ("web_url", "html_url", "page_url"):
+            found = _http_url(links.get(key))
+            if found:
+                return found
+    return ""
+
+
+def _run_page_url(run: dict[str, Any], repository_url: str) -> str:
+    explicit = _explicit_page_url(run)
+    if explicit:
+        return explicit
+    slug = ""
+    for key in ("slug", "public_id", "publicId", "id"):
+        value = run.get(key)
+        if value:
+            slug = str(value).strip()
+            break
+    base = (repository_url or "").strip().rstrip("/")
+    if not slug or not base.startswith(("http://", "https://")):
+        return ""
+    return f"{base}/cicd/runs/{quote(slug, safe='')}"
+
+
+def _is_later(
+    finished: datetime | None,
+    index: int,
+    current_finished: datetime | None,
+    current_index: int,
+) -> bool:
+    if current_index < 0:
+        return True
+    if finished is None and current_finished is None:
+        return index >= current_index
+    if finished is None:
+        return False
+    if current_finished is None:
+        return True
+    if finished != current_finished:
+        return finished > current_finished
+    return index >= current_index
 
 
 def _run_dates(run: dict[str, Any]) -> dict[str, Any]:
@@ -158,21 +204,31 @@ def _duration_minutes(run: dict[str, Any]) -> float | None:
     return (finished - started).total_seconds() / 60.0
 
 
-def _collect_runs(runs: list[dict[str, Any]], org_slug: str, repo_slug: str) -> _RunStats:
+def _collect_runs(runs: list[dict[str, Any]], repository_url: str) -> _RunStats:
     stats = _RunStats()
     last_red_at: datetime | None = None
+    last_red_index = -1
+    last_run_at: datetime | None = None
+    last_run_index = -1
 
-    for run in runs:
+    for index, run in enumerate(runs):
         status = str(run.get("status") or "").lower()
+        finished = _finished_at(run)
         if status == SUCCESS_STATUS:
             stats.success_count += 1
         elif status in FAILURE_STATUSES:
             stats.failure_count += 1
-            finished = _finished_at(run)
-            slug = str(run.get("slug") or run.get("id") or "")
-            if slug and (last_red_at is None or (finished and finished >= last_red_at)):
-                last_red_at = finished or last_red_at
-                stats.last_red_url = _run_url(org_slug, repo_slug, slug)
+            if _is_later(finished, index, last_red_at, last_red_index):
+                last_red_at = finished
+                last_red_index = index
+                stats.last_red_url = _run_page_url(run, repository_url)
+
+        if status == SUCCESS_STATUS or status in FAILURE_STATUSES:
+            if _is_later(finished, index, last_run_at, last_run_index):
+                last_run_at = finished
+                last_run_index = index
+                stats.last_run_url = _run_page_url(run, repository_url)
+                stats.last_run_status = status
 
         duration = _duration_minutes(run)
         if duration is not None and status in {SUCCESS_STATUS, *FAILURE_STATUSES}:
@@ -269,6 +325,35 @@ def _build_findings(
             )
         )
 
+    if config_present and stats is not None and stats.last_run_status:
+        refs = [stats.last_run_url] if stats.last_run_url else []
+        if stats.last_run_status == SUCCESS_STATUS:
+            findings.append(
+                Finding(
+                    scan=scan,
+                    category=CATEGORY,
+                    severity=Finding.Severity.LOW,
+                    title="Последний прогон CI успешный",
+                    detail="Последний завершённый прогон завершился успешно.",
+                    recommendation="",
+                    evidence_refs=refs,
+                    estimated_score_impact=0,
+                )
+            )
+        elif stats.last_run_status in FAILURE_STATUSES:
+            findings.append(
+                Finding(
+                    scan=scan,
+                    category=CATEGORY,
+                    severity=Finding.Severity.HIGH,
+                    title="Последний прогон CI упал",
+                    detail="Последний завершённый прогон завершился с ошибкой.",
+                    recommendation="Разберите падение и почините падающую проверку.",
+                    evidence_refs=refs,
+                    estimated_score_impact=0,
+                )
+            )
+
     if findings and category_score is not None:
         Finding.objects.bulk_create(findings)
 
@@ -301,8 +386,11 @@ def _save_scored(
             unit="ratio",
             is_available=runs_available,
             reason="" if runs_available else runs_reason,
-            # Подтверждающая ссылка — последний красный прогон (если он есть).
-            source_reference=(stats.last_red_url if stats is not None else ""),
+            source_reference=(
+                ""
+                if stats is None
+                else stats.last_run_url or stats.last_red_url
+            ),
         )
         _save_metric(
             scan,
@@ -327,6 +415,8 @@ def _save_scored(
                 success_rate=stats.success_rate,
                 median_duration_minutes=stats.median_duration_minutes,
                 last_red_url=stats.last_red_url,
+                last_run_url=stats.last_run_url,
+                last_run_status=stats.last_run_status,
             )
         health_score, _ = HealthScore.objects.update_or_create(
             scan=scan,
@@ -381,8 +471,8 @@ def run_cicd_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
         logger.error(f"Не удалось получить CI-прогоны {repository}: {exc}")
         return _save_unavailable(scan, str(exc))
 
-    stats = _collect_runs(runs, repository.org_slug, repository.repo_slug)
-    total, completeness, submetric_scores = _score(stats, config_present=True)
+    stats = _collect_runs(runs, repository.url)
+    total, completeness, submetric_scores = _score(stats)
     runs_reason = "" if stats.success_rate is not None else "нет завершённых прогонов"
     return _save_scored(
         scan,

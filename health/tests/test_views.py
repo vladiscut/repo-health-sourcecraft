@@ -4,11 +4,39 @@ from django.contrib.auth import get_user_model
 from django.core.paginator import Paginator
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
-from health.models import Repository, UserRepositoryAccess
+from health.models import Finding, HealthScore, MetricSample, Repository, Scan, UserRepositoryAccess
 from health.tests.helpers import grant_access, make_profile, make_repo
 from health.views import PAGE_SIZE, _page_links
 from integrations.sourcecraft import SourceCraftError
+
+
+def _make_completed_scan(repo, *, docs=80, activity=70, ci_cd=None, security=None):
+    scan = Scan.objects.create(
+        repository=repo,
+        status=Scan.Status.SUCCESS,
+        triggered_by=Scan.TriggeredBy.SCHEDULE,
+        finished_at=timezone.now(),
+    )
+    values = {
+        MetricSample.Category.DOCS: docs,
+        MetricSample.Category.ACTIVITY: activity,
+        MetricSample.Category.CI_CD: ci_cd,
+        MetricSample.Category.SECURITY: security,
+        MetricSample.Category.ISSUES: 60,
+        MetricSample.Category.CODE_HEALTH: 55,
+    }
+    for category, total in values.items():
+        HealthScore.objects.create(
+            scan=scan,
+            category=category,
+            total=total,
+            weight_used=0.15,
+            data_completeness=1.0 if total is not None else 0.0,
+            raw_metrics={"reason": "публичный запуск"} if total is None else {},
+        )
+    return scan
 
 
 class RepoListTests(TestCase):
@@ -108,11 +136,80 @@ class RepoDetailAndExportTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Скачать Markdown")
-        self.assertContains(response, "Скачать PDF")
+        self.assertNotContains(response, "Скачать PDF")
+        self.assertContains(response, "Запустить анализ")
         self.assertContains(
             response,
             f'<a href="{reverse("health:repo-list")}">← К списку</a>',
         )
+
+    def test_detail_shows_null_categories_and_hides_score_while_scanning(self):
+        _make_completed_scan(self.public)
+        response = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"])
+        )
+        self.assertFalse(response.context["scan_in_progress"])
+        self.assertIsNotNone(response.context["score"])
+        self.assertContains(response, "Нет данных")
+        self.assertContains(response, "перераспределяется")
+        self.assertContains(response, "публичный запуск")
+
+    def test_detail_shows_what_score_is_made_of(self):
+        scan = _make_completed_scan(self.public, docs=98)
+        docs = scan.scores.get(category=MetricSample.Category.DOCS)
+        docs.raw_metrics = {
+            "readme_present": True,
+            "readme_size_chars": 3200,
+            "license_present": True,
+            "license_type_recognized": True,
+            "submetric_scores": {"readme_quality": 96, "license": 100},
+        }
+        docs.save(update_fields=["raw_metrics"])
+        response = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"])
+        )
+        self.assertContains(response, "README")
+        self.assertContains(response, "вес 60%")
+        self.assertContains(response, "3200 символов")
+        self.assertContains(response, "Лицензия")
+        self.assertContains(response, "тип распознан")
+
+        Scan.objects.create(
+            repository=self.public,
+            status=Scan.Status.RUNNING,
+            triggered_by=Scan.TriggeredBy.USER,
+        )
+        response = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"])
+        )
+        self.assertTrue(response.context["scan_in_progress"])
+        self.assertIsNone(response.context["score"])
+        self.assertContains(response, "Идёт анализ")
+        self.assertContains(response, "data-scan-status-url")
+        self.assertNotContains(response, "Скачать Markdown")
+        self.assertNotContains(response, "Запустить анализ")
+
+    def test_scan_status_pending_and_ready(self):
+        url = reverse("health:repo-scan-status", args=["acme", "tools"])
+        ready = self.client.get(url)
+        self.assertEqual(ready.status_code, 200)
+        self.assertEqual(ready.json()["status"], "ready")
+
+        active = Scan.objects.create(
+            repository=self.public,
+            status=Scan.Status.PENDING,
+            triggered_by=Scan.TriggeredBy.SCHEDULE,
+        )
+        pending = self.client.get(url)
+        self.assertEqual(pending.json()["status"], "pending")
+        self.assertEqual(pending.json()["scan_id"], active.id)
+
+        active.status = Scan.Status.SUCCESS
+        active.finished_at = timezone.now()
+        active.save(update_fields=["status", "finished_at"])
+        after = self.client.get(url)
+        self.assertEqual(after.json()["status"], "ready")
+        self.assertEqual(after.json()["scan_id"], active.id)
 
     def test_back_link_returns_to_personal_list(self):
         user = get_user_model().objects.create_user("owner", password="x")
@@ -136,7 +233,110 @@ class RepoDetailAndExportTests(TestCase):
             {"from": "me"},
         )
         self.assertRedirects(response, f"{detail}?from=me")
+        apply_async.assert_called_once_with(
+            kwargs={
+                "repository_id": self.public.id,
+                "user_id": None,
+                "force": True,
+            },
+            queue="analysis.scheduled",
+        )
+        self.assertTrue(
+            Scan.objects.filter(
+                repository=self.public,
+                status=Scan.Status.PENDING,
+            ).exists()
+        )
+
+    @patch("health.views.task_check_and_scan_repository.apply_async")
+    def test_owner_rescan_uses_user_queue(self, apply_async):
+        user = get_user_model().objects.create_user("owner", password="x")
+        grant_access(user, self.public)
+        self.client.force_login(user)
+
+        response = self.client.post(
+            reverse("health:repo-rescan", args=["acme", "tools"])
+        )
+
+        self.assertEqual(response.status_code, 302)
+        apply_async.assert_called_once_with(
+            kwargs={
+                "repository_id": self.public.id,
+                "user_id": user.id,
+                "force": True,
+            },
+            queue="analysis.user",
+        )
+        pending = Scan.objects.get(
+            repository=self.public,
+            status=Scan.Status.PENDING,
+        )
+        self.assertEqual(pending.triggered_by, Scan.TriggeredBy.USER)
+        self.assertEqual(pending.triggered_by_user_id, user.id)
+
+    @patch("health.views.task_check_and_scan_repository.apply_async")
+    def test_public_stranger_rescan_uses_scheduled_queue(self, apply_async):
+        response = self.client.post(
+            reverse("health:repo-rescan", args=["acme", "tools"])
+        )
+        self.assertEqual(response.status_code, 302)
+        apply_async.assert_called_once_with(
+            kwargs={
+                "repository_id": self.public.id,
+                "user_id": None,
+                "force": True,
+            },
+            queue="analysis.scheduled",
+        )
+        self.assertTrue(
+            Scan.objects.filter(
+                repository=self.public,
+                status=Scan.Status.PENDING,
+            ).exists()
+        )
+
+    @patch("health.views.task_check_and_scan_repository.apply_async")
+    def test_rescan_hides_old_score_immediately(self, apply_async):
+        _make_completed_scan(self.public)
+        response = self.client.post(
+            reverse("health:repo-rescan", args=["acme", "tools"]),
+            follow=True,
+        )
+        self.assertTrue(response.context["scan_in_progress"])
+        self.assertIsNone(response.context["score"])
+        self.assertContains(response, "Идёт анализ")
+        self.assertContains(response, "выгрузка недоступны")
+        self.assertNotContains(response, "Запустить анализ")
+        self.assertNotContains(response, "Скачать Markdown")
         apply_async.assert_called_once()
+
+    def test_export_blocked_while_scan_in_progress(self):
+        Scan.objects.create(
+            repository=self.public,
+            status=Scan.Status.PENDING,
+            triggered_by=Scan.TriggeredBy.SCHEDULE,
+        )
+        detail = reverse("health:repo-detail", args=["acme", "tools"])
+        response = self.client.get(
+            reverse("health:repo-export", args=["acme", "tools", "md"]),
+            follow=True,
+        )
+        self.assertRedirects(response, detail)
+        self.assertContains(response, "Выгрузка недоступна")
+
+    @patch("health.views.task_check_and_scan_repository.apply_async")
+    def test_rescan_while_active_does_not_queue_again(self, apply_async):
+        Scan.objects.create(
+            repository=self.public,
+            status=Scan.Status.RUNNING,
+            triggered_by=Scan.TriggeredBy.SCHEDULE,
+        )
+        response = self.client.post(
+            reverse("health:repo-rescan", args=["acme", "tools"]),
+            follow=True,
+        )
+        apply_async.assert_not_called()
+        self.assertContains(response, "уже идёт")
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
     def test_scan_query_queues_scheduled_force_scan(self, apply_async):
@@ -145,7 +345,11 @@ class RepoDetailAndExportTests(TestCase):
 
         self.assertRedirects(response, url)
         apply_async.assert_called_once_with(
-            args=[self.public.id, None, True],
+            kwargs={
+                "repository_id": self.public.id,
+                "user_id": None,
+                "force": True,
+            },
             queue="analysis.scheduled",
         )
 
@@ -181,7 +385,11 @@ class RepoDetailAndExportTests(TestCase):
 
         self.assertRedirects(response, url)
         apply_async.assert_called_once_with(
-            args=[self.private.id, None, True],
+            kwargs={
+                "repository_id": self.private.id,
+                "user_id": None,
+                "force": True,
+            },
             queue="analysis.scheduled",
         )
 
@@ -273,10 +481,38 @@ class RepoDetailAndExportTests(TestCase):
             ).exists()
         )
 
-    def test_export_markdown_and_pdf_are_empty_files(self):
+    def test_http_evidence_is_a_link_on_the_card_and_in_markdown(self):
+        scan = _make_completed_scan(self.public)
+        page_url = "https://sourcecraft.dev/acme/tools/cicd/runs/run-1"
+        Finding.objects.create(
+            scan=scan,
+            category=MetricSample.Category.CI_CD,
+            severity=Finding.Severity.LOW,
+            title="Последний прогон CI успешный",
+            detail="Последний завершённый прогон завершился успешно.",
+            recommendation="",
+            evidence_refs=[page_url, ".sourcecraft/ci.yaml"],
+            estimated_score_impact=0,
+        )
+
+        page = self.client.get(reverse("health:repo-detail", args=["acme", "tools"]))
+        self.assertContains(page, f'href="{page_url}"')
+        self.assertNotContains(page, 'href=".sourcecraft/ci.yaml"')
+
+        md = self.client.get(reverse("health:repo-export", args=["acme", "tools", "md"]))
+        body = md.content.decode("utf-8")
+        self.assertIn(page_url, body)
+        self.assertNotIn(".sourcecraft/ci.yaml", body)
+
+    def test_export_markdown_contains_score(self):
+        _make_completed_scan(self.public)
         md = self.client.get(reverse("health:repo-export", args=["acme", "tools", "md"]))
         self.assertEqual(md.status_code, 200)
-        self.assertEqual(md.content, b"")
+        body = md.content.decode("utf-8")
+        self.assertIn("Repo Health", body)
+        self.assertIn("acme/tools", body)
+        self.assertIn("Документация", body)
+        self.assertIn("Нет данных", body)
         self.assertIn("text/markdown", md["Content-Type"])
         self.assertIn("acme-tools-health.md", md["Content-Disposition"])
 
@@ -285,6 +521,10 @@ class RepoDetailAndExportTests(TestCase):
         self.assertEqual(pdf.content, b"")
         self.assertEqual(pdf["Content-Type"], "application/pdf")
 
+    def test_export_markdown_without_scan_is_not_empty(self):
+        md = self.client.get(reverse("health:repo-export", args=["acme", "tools", "md"]))
+        self.assertEqual(md.status_code, 200)
+        self.assertIn("Нет данных", md.content.decode("utf-8"))
     def test_unknown_export_format_is_404(self):
         response = self.client.get(
             reverse("health:repo-export", args=["acme", "tools", "exe"])

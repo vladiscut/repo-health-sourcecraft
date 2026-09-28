@@ -32,6 +32,37 @@ logger = logging.getLogger(__name__)
 CATEGORY = MetricSample.Category.SECURITY
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
 
+# GET /v1/scans/latest отдаёт ScanStatus числом: 0 INITIATED, 1 FINISHED, 2 FAILED.
+# GET /v1/scans/{uuid} для того же скана отдаёт строку FINISHED.
+_STATUS_CODES = {
+    0: "INITIATED",
+    1: "FINISHED",
+    2: "FAILED",
+}
+
+_UNFINISHED_REASONS = {
+    "INITIATED": (
+        "Скан AppSec ещё выполняется. "
+        "Балл Security появится, когда проверка завершится."
+    ),
+    "RUNNING": (
+        "Скан AppSec ещё выполняется. "
+        "Балл Security появится, когда проверка завершится."
+    ),
+    "FAILED": (
+        "Скан AppSec завершился с ошибкой. "
+        "Категорию Security считаем только по успешному скану."
+    ),
+    "NO_RUNS_YET": "Платформенный AppSec для этого репозитория ещё не запускался.",
+    "": "Статус скана AppSec не пришёл.",
+}
+
+_LEGACY_FINISHED_REASON = (
+    "Скан AppSec уже завершён. "
+    "Запустите анализ ещё раз, чтобы посчитать балл Security."
+)
+
+
 SCANNERS = frozenset({"sca", "sast", "secrets"})
 CLOSED_STATUSES = frozenset({
     "resolved",
@@ -73,6 +104,45 @@ def _user_pat(scan: Scan) -> str:
     except Profile.DoesNotExist:
         return ""
     return (profile.sourcecraft_pat or "").strip()
+
+
+def scan_status_name(raw) -> str:
+    """Имя статуса скана: строка API или число из GET /v1/scans/latest."""
+
+    if raw is None or isinstance(raw, bool):
+        return ""
+    if isinstance(raw, int):
+        return _STATUS_CODES.get(raw, str(raw))
+    text = str(raw).strip()
+    if text.isdigit():
+        return _STATUS_CODES.get(int(text), text)
+    return text.upper()
+
+
+def unfinished_reason(status: str) -> str:
+    if status in _UNFINISHED_REASONS:
+        return _UNFINISHED_REASONS[status]
+    if not status:
+        return _UNFINISHED_REASONS[""]
+    return (
+        f"Скан AppSec в состоянии «{status}». "
+        "Категорию Security считаем только по завершённому скану."
+    )
+
+
+def plain_security_reason(text: str) -> str:
+    """Обычная фраза вместо уже сохранённого «скан AppSec не FINISHED: …»."""
+
+    prefix = "скан appsec не finished:"
+    if not text.lower().startswith(prefix):
+        return text
+    token = text.split(":", 1)[1].strip()
+    if token.lower() == "пусто":
+        token = ""
+    status = scan_status_name(token)
+    if status == "FINISHED":
+        return _LEGACY_FINISHED_REASON
+    return unfinished_reason(status)
 
 
 def _save_unavailable(scan: Scan, reason: str) -> HealthScore:
@@ -315,9 +385,9 @@ def run_security_scan(scan: Scan, client: AppSecClient) -> HealthScore:
     if not latest:
         return _save_unavailable(scan, "нет скана AppSec")
 
-    status = str(latest.get("status") or "").upper()
+    status = scan_status_name(latest.get("status"))
     if status != "FINISHED":
-        return _save_unavailable(scan, f"скан AppSec не FINISHED: {status or 'пусто'}")
+        return _save_unavailable(scan, unfinished_reason(status))
 
     scan_uuid = str(latest.get("uuid") or "")
     try:

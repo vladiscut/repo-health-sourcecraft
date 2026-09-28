@@ -86,6 +86,32 @@ class SecurityScanTests(TestCase):
         self.assertEqual(scan.status, Scan.Status.RUNNING)
         client.list_defect_groups.assert_called_once_with("repo-1", scan_uuid=FINISHED["uuid"])
 
+    def test_numeric_finished_status_is_scored(self):
+        scan = self._scan(self.user)
+        client = self._client({**FINISHED, "status": 1}, groups=[])
+
+        with patch("health.security_scan.AppSecClient", return_value=client):
+            score_id = run(scan.pk)
+
+        score = HealthScore.objects.get(pk=score_id)
+        self.assertEqual(score.total, 100)
+        client.list_defect_groups.assert_called_once()
+
+    def test_initiated_status_is_explained_in_plain_language(self):
+        scan = self._scan(self.user)
+        client = self._client({**FINISHED, "status": 0})
+
+        with patch("health.security_scan.AppSecClient", return_value=client):
+            score_id = run(scan.pk)
+
+        score = HealthScore.objects.get(pk=score_id)
+        sample = MetricSample.objects.get(scan=scan, metric_key="_category_unavailable")
+
+        self.assertIsNone(score.total)
+        self.assertIn("ещё выполняется", score.raw_metrics["reason"])
+        self.assertNotIn("FINISHED", sample.error_reason)
+        client.list_defect_groups.assert_not_called()
+
     def test_missing_scan_is_null_and_skips_groups(self):
         scan = self._scan(self.user)
         client = self._client(None)
