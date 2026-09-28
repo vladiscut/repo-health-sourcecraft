@@ -19,7 +19,7 @@
         <option value="score" {% if sort == "score" %}selected{% endif %}>По Repo Health Score</option>
         <option value="rating" {% if sort == "rating" %}selected{% endif %}>По рейтингу SourceCraft</option>
         <option value="updated" {% if sort == "updated" %}selected{% endif %}>По активности</option>
-        <option value="name" {% if sort == "name" %}selected{% endif %}>По имени</option>
+        <option value="name" {% if sort == "name" %}selected{% endif %}>По названию</option>
     </select>
     <button type="submit">Показать</button>
     {% if filters_active %}
@@ -30,7 +30,7 @@
 <table class="table">
     <thead>
         <tr>
-            <th>Репозиторий</th>
+            <th>Название</th>
             <th>Язык</th>
             <th>Рейтинг</th>
             <th>Реакции</th>

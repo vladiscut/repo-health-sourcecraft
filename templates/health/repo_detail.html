@@ -17,7 +17,7 @@
             · 👍 {{ repo.likes }} · ❤️ {{ repo.hearts }} · 💎 {{ repo.diamonds }}
             · {{ repo.forks }} форков
             {% if repo.url %}
-            · <a href="{{ repo.url }}">ссылка на SourceCraft</a>
+            · <a href="{{ repo.url }}" target="_blank">ссылка на SourceCraft</a>
             {% endif %}
         </p>
         {% if analyzed_at and not scan_in_progress %}
@@ -27,7 +27,7 @@
     {% if scan_in_progress %}
     <div class="hero-score">
         <span class="loader visible" aria-hidden="true"></span>
-        <div class="muted">Идёт анализ…</div>
+        <div class="muted">Идёт анализ</div>
     </div>
     {% elif score and score.total is not None %}
     <div class="hero-score">
@@ -53,7 +53,7 @@
         {% if from_me %}<input type="hidden" name="from" value="me">{% endif %}
         <input type="hidden" name="next" value="{% url 'health:repo-detail' repo.org_slug repo.repo_slug %}">
         <button type="submit">Запустить анализ</button>
-        <span class="loader" aria-hidden="true"></span>
+        <span class="loader ms-1" aria-hidden="true"></span>
     </form>
     {% elif scan_in_progress %}
     <span class="muted">Анализ уже идёт — запуск и выгрузка недоступны, пока скан в очереди или выполняется.</span>
