@@ -69,27 +69,38 @@
     <ul class="bars">
         {% for row in category_rows %}
         <li>
-            <span>{{ row.label }}</span>
-            {% if row.value is None %}
-            <div class="bar"></div>
-            <b class="muted">Нет данных</b>
-            {% else %}
-            <div class="bar"><i style="width: {{ row.value }}%"></i></div>
-            <b>{{ row.value }}</b>
-            {% endif %}
             {% if row.parts %}
-            <ul class="parts">
-                {% for part in row.parts %}
-                <li>
-                    <span>
-                        <span class="part-label">{{ part.label }}</span>
-                        {% if part.share != None %}<span class="part-meta">· вес {{ part.share }}%</span>{% endif %}
-                        {% if part.detail %}<span class="part-meta">· {{ part.detail }}</span>{% endif %}
-                    </span>
-                    {% if part.score != None %}<b>{{ part.score }}</b>{% endif %}
-                </li>
-                {% endfor %}
-            </ul>
+            <details class="bar-cat">
+                <summary class="bar-head">
+            {% else %}
+            <div class="bar-head">
+            {% endif %}
+                <span class="chevron{% if not row.parts %} chevron-spacer{% endif %}" aria-hidden="true"></span>
+                <span>{{ row.label }}</span>
+                {% if row.value is None %}
+                <div class="bar"></div>
+                <b class="muted">Нет данных</b>
+                {% else %}
+                <div class="bar"><i style="width: {{ row.value }}%"></i></div>
+                <b>{{ row.value }}</b>
+                {% endif %}
+            {% if row.parts %}
+                </summary>
+                <ul class="parts">
+                    {% for part in row.parts %}
+                    <li>
+                        <span>
+                            <span class="part-label">{{ part.label }}</span>
+                            {% if part.share != None %}<span class="part-meta">· вес {{ part.share }}%</span>{% endif %}
+                            {% if part.detail %}<span class="part-meta">· {{ part.detail }}</span>{% endif %}
+                        </span>
+                        {% if part.score != None %}<b>{{ part.score }}</b>{% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </details>
+            {% else %}
+            </div>
             {% endif %}
         </li>
         {% endfor %}

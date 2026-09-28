@@ -1,12 +1,4 @@
-"""Клиент SourceCraft Security API.
-
-База: ``https://appsec.sourcecraft.tech``.
-Спецификация: ``https://appsec.sourcecraft.tech/swagger-ui/`` (OpenAPI ``/openapi``).
-
-``gitRepo`` в запросах — это ``sourcecraft_id`` репозитория.
-401/403/404 не повторяются и не означают ноль уязвимостей.
-429 и 5xx остаются ошибкой после ретраев общей HTTP-сессии.
-"""
+"""Клиент SourceCraft Security API."""
 
 from typing import Any
 
@@ -74,7 +66,7 @@ class AppSecClient(SourceCraftAPI):
         page_size: int = DEFAULT_PAGE_SIZE,
         page_token: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Страница AppSec: ``pageSize`` / ``pageToken`` / ``nextPageToken``."""
+        """Одна страница списка."""
 
         query = dict(params or {})
         query["pageSize"] = page_size
@@ -86,10 +78,7 @@ class AppSecClient(SourceCraftAPI):
         return items, data.get("nextPageToken") or None
 
     def get_latest_scan(self, sourcecraft_id: str) -> dict[str, Any] | None:
-        """Последний скан. ``GET /v1/scans/latest?gitRepo=``.
-
-        Пустой список — ``None``. Это не скан со статусом FINISHED и нулём находок.
-        """
+        """Последний скан. Пустой ответ — это None, не ноль находок."""
 
         data = self._request(
             "GET",

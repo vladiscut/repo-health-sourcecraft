@@ -1,5 +1,3 @@
-"""Unit-тесты для :mod:`integrations.sourcecraft`."""
-
 from unittest.mock import Mock, patch
 
 import requests
@@ -68,8 +66,6 @@ class SourceCraftAPITests(SimpleTestCase):
         client = cls(session=session, rate_limiter=_NoLimit(), **kwargs)
         return client, session
 
-    # -- __init__ -------------------------------------------------------
-
     def test_missing_base_url_setting_raises(self):
         class NoUrl(SourceCraftAPI):
             BASE_URL_SETTING_NAME = "SOURCECRAFT_API_NO_SUCH_URL"
@@ -98,8 +94,6 @@ class SourceCraftAPITests(SimpleTestCase):
         client, _ = self._client(max_pages=3)
         self.assertEqual(client.max_pages, 3)
 
-    # -- headers --------------------------------------------------------
-
     def test_headers_with_token(self):
         client, _ = self._client(token="abc")
         headers = client._headers()
@@ -111,8 +105,6 @@ class SourceCraftAPITests(SimpleTestCase):
         client, _ = self._client(token=None)
         client.access_token = ""
         self.assertNotIn("Authorization", client._headers())
-
-    # -- _request -------------------------------------------------------
 
     def test_request_builds_url_and_params(self):
         client, session = self._client()
@@ -173,8 +165,6 @@ class SourceCraftAPITests(SimpleTestCase):
         session.request.return_value = _response(200, None)
         with self.assertRaises(SourceCraftError):
             client._request("GET", "/user")
-
-    # -- pagination -----------------------------------------------------
 
     def test_fetch_page_adds_page_size_and_token(self):
         client, _ = self._client()
@@ -241,8 +231,6 @@ class SourceCraftAPITests(SimpleTestCase):
             items = list(client._paginate("/repos", collection_key="items"))
         self.assertEqual(items, [{"id": 1}, {"id": 2}])
 
-    # -- lifecycle ------------------------------------------------------
-
     def test_close_does_not_close_borrowed_session(self):
         client, session = self._client()
         client.close()
@@ -252,8 +240,6 @@ class SourceCraftAPITests(SimpleTestCase):
         client, _ = self._client()
         with client as entered:
             self.assertIs(entered, client)
-
-    # -- retry ----------------------------------------------------------
 
     def test_build_retry_covers_status_codes(self):
         retry = _build_retry()

@@ -1,5 +1,3 @@
-"""Unit-тесты для :mod:`health.code_health_scan`."""
-
 import tempfile
 from datetime import timedelta
 from pathlib import Path

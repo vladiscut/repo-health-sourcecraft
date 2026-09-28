@@ -1,11 +1,4 @@
-"""
-Оркестрация анализа репозитория.
-
-Отвечает за:
-  1. Создание одного Scan и параллельный запуск таск для категорий
-  2. Агрегацию результатов всех категорий в итоговый Repo Health Score
-  3. Периодический пересчёт публичных репозиториев (celery-beat)
-"""
+"""Запуск скана и сбор итогового балла."""
 import datetime
 import logging
 import shutil
@@ -37,16 +30,10 @@ from integrations.sourcecraft import SourceCraftClient, SourceCraftError
 
 logger = logging.getLogger(__name__)
 
-# Веса категорий — единственный источник: health.scoring.CATEGORY_WEIGHTS.
 ALL_CATEGORIES = list(CATEGORY_WEIGHTS.keys())
 
-# Порог «предварительного» Score (design.md D4): если суммарный вес
-# рассчитанных категорий ниже него, Score публикуется как черновой и
-# не попадает в публичный рейтинг.
 PREVIEW_SCORE_WEIGHT_THRESHOLD = 0.5
 
-# Сколько Scan может провести в PENDING/RUNNING, прежде чем
-# мы считаем его протухшим
 SCAN_STALE_AFTER = datetime.timedelta(
     minutes=settings.SCAN_STALE_TIMEOUT_MINUTES
 )
@@ -57,11 +44,6 @@ class ActiveScanExistsError(Exception):
 
 
 def _mark_stale_scans_as_failed(queryset) -> int:
-    """
-    Переводит в FAILED те Scan, что провисели в PENDING/RUNNING
-    дольше SCAN_STALE_AFTER
-    """
-
     threshold = timezone.now() - SCAN_STALE_AFTER
     stale_error = (
         f"Scan помечен как зависший: не завершался более {SCAN_STALE_AFTER}"
@@ -77,14 +59,6 @@ def _mark_stale_scans_as_failed(queryset) -> int:
 
 
 def _get_current_commit_hash(repository: Repository) -> str:
-    """
-    Запрашивает hash последнего коммита дефолтной ветки
-
-    Если SourceCraft недоступен — это тоже "нет данных", а не повод
-    считать репозиторий неизменившимся или блокировать скан: возвращаем
-    пустую строку
-    """
-
     try:
         client = SourceCraftClient()
         commit_hash = client.get_default_branch_hash(
@@ -99,12 +73,6 @@ def _get_current_commit_hash(repository: Repository) -> str:
 
 
 def _fallback_health_score(scan_id: int, category: str, reason: str) -> int:
-    """Пишет «Нет данных» по категории, если её scan-функция не смогла отработать.
-
-    Используется как при реальных сбоях (категория упала с исключением),
-    так и намеренно — например, когда у репозитория issues == 0
-    """
-
     hs, _ = HealthScore.objects.update_or_create(
         scan_id=scan_id,
         category=category,
@@ -123,7 +91,6 @@ def _fallback_health_score(scan_id: int, category: str, reason: str) -> int:
             value=None,
             is_available=False,
             error_reason=reason[:255],
-            # Подтверждающего артефакта нет — ссылку очищаем явно.
             source_reference="",
         ),
     )
@@ -134,10 +101,6 @@ def _fallback_health_score(scan_id: int, category: str, reason: str) -> int:
 
 
 def _is_effectively_empty(repository: Repository) -> bool:
-    """Репозиторий считается пустым, если `is_empty=True`
-    ИЛИ у него нет дефолтной ветки — сканировать такой 
-    репозиторий по категориям бессмысленно
-    """
     return bool(repository.is_empty) or not repository.default_branch
 
 
@@ -147,11 +110,7 @@ def _claim_pending_or_create_running(
     user_id: int | None,
     commit_sha: str,
 ) -> Scan:
-    """Берёт PENDING-заглушку с карточки или создаёт новый RUNNING Scan.
-
-    Карточка создаёт PENDING сразу при «Запустить анализ», чтобы UI не
-    показывал старый Score, пока Celery ещё не дошёл до оркестратора.
-    """
+    """Берёт PENDING-заглушку с карточки или создаёт новый RUNNING Scan."""
 
     pending = (
         Scan.objects.filter(
@@ -195,13 +154,6 @@ def _create_empty_repo_scan(
     triggered_by: str,
     user_id: int | None
 ) -> int:
-    """Создаёт Scan для пустого репозитория без обращений к SourceCraft API.
-
-    По каждой из 6 категорий и в итоге пишем пустой балл: в интерфейсе
-    это «Нет данных». Скан был, но ветки нет и измерить нечего.
-    Ноль сюда не пишем — ноль остаётся измеренным плохим баллом.
-    """
-
     reaped = _mark_stale_scans_as_failed(
         Scan.objects.filter(repository=repository)
     )
@@ -307,27 +259,6 @@ def start_repository_scan(
     force: bool = False,
     user_id: int = None,
 ) -> int:
-    """
-    Создаёт Scan и раздаёт по одной задаче на каждую из категорий
-    параллельно (celery.group), а по их завершении запускает
-    task_aggregate_scan (celery.chord callback), который считает
-    итоговый Repo Health Score.
-
-    Особые случаи, не требующие полного скана:
-    - Пустой репозиторий (`is_empty=True` либо нет `default_branch`):
-      категории и итог сразу помечаются «Нет данных».
-      Если репозиторий уже был отмечен пустым в прошлый раз и остаётся
-      пустым — просто переиспользуем прошлый Scan
-    - Категория Issues пропускается, если у репозитория `issues == 0`
-    - Если текущий hash дефолтной ветки совпадает
-      с `repository.last_commit_sha_processed` и есть хотя бы один
-      завершённый скан — репозиторий не менялся, возвращаем id уже
-      существующего актуального скана вместо повторного прогона всех категорий.
-
-    `force=True` отключает обе проверки "не изменился" и всегда
-    запускает полный скан.
-    """
-
     from health.tasks import task_aggregate_scan
 
     repository = Repository.objects.get(pk=repository_id)
@@ -428,13 +359,6 @@ def start_repository_scan(
 
 
 def _scale_finding_impacts(scan: Scan, by_category: dict[str, HealthScore]) -> None:
-    """Пишет в находки прирост общего Score, а не баллы категории.
-
-    Сканеры сохраняют баллы категории (find_impact). Здесь они
-    умножаются на фактический вес категории. Исходные баллы лежат в
-    scan.raw, чтобы повторный запуск агрегации не умножал вес дважды.
-    """
-
     findings = list(Finding.objects.filter(scan=scan))
     if not findings:
         return
@@ -461,27 +385,13 @@ def _scale_finding_impacts(scan: Scan, by_category: dict[str, HealthScore]) -> N
 
 
 def aggregate_scan(scan_id: int) -> dict:
-    """
-    Считает Repo Health Score по категориям, где данные есть.
-
-    Перенормировка весов: если у части категорий total is None ("Нет
-    данных"), их вес НЕ обнуляет итог, а пропорционально
-    перераспределяется между категориями, где расчёт есть. Так
-    отсутствие данных не ухудшает Score автоматически.
-    """
-
     scan = Scan.objects.select_related("repository").get(pk=scan_id)
     health_scores = list(HealthScore.objects.filter(scan=scan))
     by_category = {hs.category: hs for hs in health_scores}
 
-    # Категория без строки HealthScore — признак сбоя инфраструктуры
-    # (задача не доехала до воркера, воркер упал и т.п.), а не "нет данных".
     missing_categories = [c for c in ALL_CATEGORIES if c not in by_category]
 
     scored = {c: hs for c, hs in by_category.items() if hs.total is not None}
-    # Вклад категории пропорционален её полноте: категория с
-    # data_completeness < 1.0 влияет на итог слабее, чем полностью
-    # измеренная (см. design.md D2).
     effective_weights = {
         c: CATEGORY_WEIGHTS[c] * hs.data_completeness
         for c, hs in scored.items()
@@ -509,16 +419,11 @@ def aggregate_scan(scan_id: int) -> dict:
     _scale_finding_impacts(scan, by_category)
 
     if missing_categories:
-        # Часть категорий не отчиталась вообще — Scan считаем частичным
         scan.status = Scan.Status.PARTIAL
         scan.error = f"Нет результата по категориям: {', '.join(missing_categories)}"
     else:
         scan.status = Scan.Status.SUCCESS
 
-    # score_confidence — агрегированная полнота данных по всем
-    # категориям (см. design.md D3). Вклад категории пропорционален
-    # её весу; отсутствующие категории учитываются как полностью
-    # неполные (data_completeness = 0).
     total_category_weight = sum(CATEGORY_WEIGHTS[c] for c in ALL_CATEGORIES)
     confidence_numerator = sum(
         CATEGORY_WEIGHTS[c] * hs.data_completeness
@@ -531,8 +436,6 @@ def aggregate_scan(scan_id: int) -> dict:
         else 0.0
     )
 
-    # Score помечается предварительным, если суммарный вес
-    # рассчитанных категорий ниже порога (см. design.md D4).
     scored_weight = sum(CATEGORY_WEIGHTS[c] for c in scored)
     is_preliminary = scored_weight < PREVIEW_SCORE_WEIGHT_THRESHOLD
 
@@ -569,16 +472,6 @@ def aggregate_scan(scan_id: int) -> dict:
 
 
 def scan_all_public_repositories():
-    """
-    Запускает start_repository_scan для каждого публичного репозитория,
-    у которого сейчас нет активного (pending/running) Scan. Приватные/
-    internal репозитории игнорируем.
-
-    Сканируем в первую очередь репозитории со свежим `last_updated`:
-    репозитории без активности (`last_updated` пуст или очень старый)
-    ставятся в очередь последними.
-    """
-
     active_repo_ids = Scan.objects.filter(
         status__in=[Scan.Status.PENDING, Scan.Status.RUNNING]
     ).values_list("repository_id", flat=True)

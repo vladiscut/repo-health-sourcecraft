@@ -1,25 +1,4 @@
-"""Общий кэш дерева файлов репозитория для категорий, которые читают
-дерево через SourceCraftClient.get_repository_file_tree (сейчас — Docs
-и Code Health).
-
-Внутри одного Scan обе категории — публичные, идут в одном celery.group
-(см. health.orchestrator.start_repository_scan) и выполняются
-ПАРАЛЛЕЛЬНО на одном и том же (repo_id, revision). Без кэша это два
-одинаковых запроса к SourceCraft почти одновременно.
-
-Решение: Redis-кэш дерева с TTL + single-flight блокировка на случай,
-если оба воркера пришли одновременно и кэш ещё пуст — тогда идёт в API
-только тот, кто первым захватил лок, второй ждёт и читает готовый
-результат. Тот же принцип (SET NX + TTL-аренда), что и в
-integrations.git.RedisCloneSemaphore и в
-integrations.sourcecraft.RedisRateLimiter — просто здесь это кэш
-результата, а не лимитер конкурентности.
-
-Ошибка API намеренно НЕ кэшируется: транзитный сбой не должен
-"заморозить" пустой результат на весь TTL для обеих категорий сразу —
-каждая пусть сама решает, как трактовать недоступность дерева
-(см. _fallback-логику в docs_scan.py / code_health_scan.py).
-"""
+"""Кэш дерева файлов репозитория."""
 
 import json
 import logging
@@ -71,16 +50,6 @@ def get_repository_tree_cached(
     client: SourceCraftClient,
     repository: Repository,
 ) -> list[dict[str, Any]]:
-    """Возвращает дерево файлов репозитория, используя общий Redis-кэш.
-
-    `repository` — health.models.Repository (не типизируем явно во
-    избежание циклического импорта health.models <-> health.tree_cache).
-
-    Поднимает SourceCraftError, если дерево получить не удалось —
-    вызывающий код (docs_scan/code_health_scan) сам решает, как
-    трактовать отсутствие данных, как и раньше.
-    """
-
     redis_client = _get_redis()
     revision = repository.default_branch or None
     key = _cache_key(repository.sourcecraft_id, revision)
@@ -129,12 +98,6 @@ def get_repository_tree_cached(
 
 
 def clear_repository_tree_cache(repository: Any) -> None:
-    """Удаляет запись кэша дерева для репозитория.
-
-    Вызывается явной clear-задачей сразу после последнего потребителя
-    дерева в цепочке скана, чтобы не держать устаревшее дерево весь TTL.
-    """
-
     redis_client = _get_redis()
     revision = repository.default_branch or None
     redis_client.delete(_cache_key(repository.sourcecraft_id, revision))

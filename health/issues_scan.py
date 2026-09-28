@@ -1,28 +1,4 @@
-"""
-Прогон анализа категории "Issues" для одного Scan.
-
-Использование:
-
-    scan = Scan.objects.create(
-        repository=repo,
-        status=Scan.Status.RUNNING,
-        triggered_by=Scan.TriggeredBy.SCHEDULE,
-    )
-    run_issues_scan(scan, client)
-
-Функция сфокусирована только на категории Issues — она не
-трогает Scan.status итогового скана и не пересчитывает общий Repo Health
-Score.
-
-Она отвечает за:
-
-1. Получение issues репозитория через SourceCraftClient.
-2. Вычисление сырых метрик категории Issues и запись их в MetricSample.
-3. Расчёт балла категории 0-100 (или None при отсутствии данных) —
-   делегирован в health.scoring.score_issues_category, здесь модуль
-   только собирает _IssuesMetrics и не занимается арифметикой скоринга.
-4. Формирование приоритизированных Finding по обнаруженным проблемам.
-"""
+"""Категория issues."""
 
 import logging
 import statistics
@@ -56,14 +32,8 @@ logger = logging.getLogger(__name__)
 
 CATEGORY = MetricSample.Category.ISSUES
 
-# Номинальный вес категории по ТЗ — единственный источник: health.scoring.
-# Финальная перенормировка между всеми 6 категориями — задача
-# health.orchestrator.aggregate_scan.
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
 
-# Пороги/сэмплинг сбора данных (не скоринга) — тоже общие с health.scoring,
-# чтобы "зависшим" при подсчёте stale_count считалось ровно то же самое,
-# что потом штрафуется в score_issues_category.
 STALE_DAYS_THRESHOLD = ISSUES_STALE_DAYS_THRESHOLD
 LOOKBACK_DAYS = ISSUES_LOOKBACK_DAYS
 FIRST_RESPONSE_SAMPLE_SIZE = ISSUES_FIRST_RESPONSE_SAMPLE_SIZE
@@ -76,8 +46,6 @@ def _is_closed(issue: dict[str, Any]) -> bool:
 
 @dataclass
 class _IssuesMetrics:
-    """Промежуточный результат вычислений — перед сохранением в БД"""
-
     total_count: int = 0
     open_count: int = 0
     closed_count: int = 0
@@ -139,15 +107,11 @@ def _compute_metrics(
     elif metrics.total_count == 0:
         metrics.close_rate_30d = None
     else:
-        # Ничего не создавалось за период, но что-то закрывалось —
-        # трактуем как хорошую динамику
         metrics.close_rate_30d = 1.0 if metrics.closed_30d > 0 else None
 
     if close_durations_days:
         metrics.median_time_to_close_days = statistics.median(close_durations_days)
 
-    # Время до первого ответа: считаем по выборке последних issues, чтобы не
-    # делать по запросу комментариев на каждый issue при большом трекере.
     sample = sorted(
         issues,
         key=lambda i: parse_datetime(i.get("created_at")) or now,
@@ -196,8 +160,6 @@ def _save_metric_samples(scan: Scan, metrics: _IssuesMetrics) -> None:
         reason: str = "",
         source_reference: str = "",
     ) -> None:
-        # Пустые/пробельные ссылки не сохраняем, чтобы поле не выглядело
-        # заполненным, когда подтверждающего артефакта фактически нет.
         reference = (source_reference or "").strip()
         MetricSample.objects.update_or_create(
             scan=scan,
@@ -212,9 +174,7 @@ def _save_metric_samples(scan: Scan, metrics: _IssuesMetrics) -> None:
             ),
         )
 
-    # Ссылка на репозиторий: подтверждает агрегаты по всему трекеру issues.
     repo_url = (scan.repository.url or "").strip()
-    # Первая зависшая issue — более точное подтверждение для stale-метрик.
     stale_ref = metrics.stale_issue_refs[0] if metrics.stale_issue_refs else ""
 
     _save("issues_total_count", metrics.total_count, "issues", source_reference=repo_url)
@@ -363,10 +323,6 @@ def _build_findings(
         )
 
     if metrics.total_count > 0 and category_score is None:
-        # total_count == 0 обрабатывается отдельным Finding выше ("нет
-        # трекера issues") — это другой случай: issues есть, но ни одна
-        # под-метрика не смогла посчитаться
-
         findings.append(
             Finding(
                 scan=scan,

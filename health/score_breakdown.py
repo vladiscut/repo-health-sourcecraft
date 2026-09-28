@@ -1,7 +1,4 @@
-"""Состав балла категории для карточки репозитория.
-
-Читает уже сохранённый снимок HealthScore и не пересчитывает Score.
-"""
+"""Разбивка балла категории для карточки."""
 
 from health.models import MetricSample
 from health.scoring import (

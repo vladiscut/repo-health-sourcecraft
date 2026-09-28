@@ -12,16 +12,6 @@ app.autodiscover_tasks()
 
 @task_postrun.connect
 def _close_db_connections_after_task(**kwargs) -> None:
-    """Закрывает соединение Django с БД по завершении каждой задачи.
-
-    Обязательно для воркеров на gevent-пуле
-    Без явного закрытия упирается в лимит открытых файлов процесса
-
-    close_old_connections() при стандартном для Django CONN_MAX_AGE=0
-    закрывает соединение безусловно, а не только "протухшие" — то есть
-    после каждой задачи соединение гарантированно освобождается.
-    """
-
     from django.db import close_old_connections
 
     close_old_connections()

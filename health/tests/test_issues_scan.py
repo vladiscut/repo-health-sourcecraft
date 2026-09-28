@@ -1,5 +1,3 @@
-"""Unit-тесты для :mod:`health.issues_scan`."""
-
 from datetime import timedelta
 from unittest.mock import Mock, patch
 

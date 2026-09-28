@@ -1,33 +1,4 @@
-"""Прогон анализа категории "Activity" для одного Scan.
-
-Модуль сфокусирован только на категории Activity — он не трогает
-Scan.status итогового скана и не пересчитывает общий Repo Health Score.
-
-Он отвечает за:
-
-1. Получение merge requests и releases через SourceCraftClient.
-2. Получение истории коммитов дефолтной ветки за ACTIVITY_LOOKBACK_DAYS
-   через SourceCraftGitClient (git clone --shallow-since) и расчёт
-   количества/частоты коммитов.
-3. Определение последней известной активности по датам из всех
-   доступных источников (Repository.last_updated, MR, releases, коммиты).
-4. Получение сырых Activity-метрик и запись их в MetricSample.
-5. Расчёт балла категории 0-100 (или None при отсутствии данных) —
-   делегированный health.scoring.score_activity_category.
-6. Формирование Finding по обнаруженным проблемам.
-
-Важно:
-- likes/hearts/diamonds из Repository не используются;
-- сетевые вызовы (в т.ч. git clone) выполняются вне открытой DB-транзакции;
-- эта категория целиком роутится на отдельную очередь `analysis.git`
-  (см. core/celery.py) с воркером на prefork-пуле, потому что git clone —
-  блокирующая subprocess-операция, которая на gevent-пуле держит greenlet
-  и не даёт освободить слот другим задачам этого воркера. Из-за этого
-  MR/releases для Activity тоже выполняются на этом воркере,
-  а не на быстром gevent-пуле analysis.scheduled — это сознательный
-  компромисс ради изоляции git-операций, а не побочный эффект.
-- собственная арифметика score находится в health.scoring.
-"""
+"""Категория активности."""
 
 import logging
 
@@ -60,17 +31,11 @@ logger = logging.getLogger(__name__)
 
 CATEGORY = MetricSample.Category.ACTIVITY
 
-# Номинальный вес категории по ТЗ — единственный источник: health.scoring.
-# Финальная перенормировка между всеми 6 категориями — задача
-# health.orchestrator.aggregate_scan.
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
 
 
 @dataclass
 class _ActivityMetrics:
-    """Промежуточный результат вычислений — перед сохранением в БД."""
-
-    # None = коммиты не удалось получить (ошибка git-клиента), а не 0.
     commits_30d: int | None = None
     commit_frequency_week: float | None = None
     commits_fetch_error: str = ""
@@ -129,11 +94,6 @@ def _compute_commit_metrics(
     repository: Repository,
     scan_id: int,
 ) -> tuple[int | None, float | None, str, list[datetime]]:
-    """Возвращает (commits_30d, commit_frequency_week, error, commit_dates).
-
-    Вызывается только при include_commits=True
-    """
-
     try:
         commit_dates = git_client.get_commit_history(scan_id)
     except SourceCraftError as exc:
@@ -155,14 +115,6 @@ def _compute_metrics(
     include_commits: bool,
     scan_id: int,
 ) -> _ActivityMetrics:
-    """Собирает сырые метрики Activity; API- и (опционально) git-клиенты
-    вызываются здесь.
-
-    `include_commits=False` (массовый плановый скан) — git_client вообще
-    не дёргается: ни запроса, ни попытки клонирования не происходит,
-    только явная пометка "сознательно не считалось".
-    """
-
     repo_id = repository.sourcecraft_id
     metrics = _ActivityMetrics()
 
@@ -225,8 +177,6 @@ def _compute_metrics(
         if commit_dates:
             last_activity_candidates.append(("commits", max(commit_dates)))
     else:
-        # Не считаем: массовый плановый скан.
-        # получения данных — commits в этом режиме не входят в формулу категории
         metrics.commits_fetch_error = "commits не считаются при массовом плановом скане"
 
     if last_activity_candidates:
@@ -248,8 +198,6 @@ def _save_metric_sample(
     error_reason: str = "",
     source_reference: str = "",
 ) -> None:
-    # Пустые/пробельные ссылки не сохраняем: поле должно оставаться пустым,
-    # если подтверждающего артефакта (файл/commit/MR/release) нет.
     reference = (source_reference or "").strip()
     MetricSample.objects.update_or_create(
         scan=scan,
@@ -266,16 +214,12 @@ def _save_metric_sample(
 
 
 def _save_metric_samples(scan: Scan, metrics: _ActivityMetrics) -> None:
-    # Ссылка-подтверждение на сам репозиторий: для метрик, которые нельзя
-    # свести к одному commit/MR (агрегаты по истории), это лучший доступный
-    # стабильный источник.
     repo_url = (scan.repository.url or "").strip()
 
     _save_metric_sample(
         scan, "activity_commits_30d", metrics.commits_30d, "commits",
         is_available=metrics.commits_30d is not None,
         error_reason=metrics.commits_fetch_error,
-        # Коммиты получены git clone'ом дефолтной ветки — ссылаемся на репо.
         source_reference=repo_url if metrics.commits_30d is not None else "",
     )
     _save_metric_sample(
@@ -291,7 +235,6 @@ def _save_metric_samples(scan: Scan, metrics: _ActivityMetrics) -> None:
         "datetime",
         is_available=metrics.last_activity_at is not None,
         error_reason="" if metrics.last_activity_at is not None else "не удалось определить дату последней активности",
-        # Подтверждение — сам репозиторий (дата активности агрегируется из него).
         source_reference=repo_url if metrics.last_activity_at is not None else "",
     )
     _save_metric_sample(
@@ -304,8 +247,6 @@ def _save_metric_samples(scan: Scan, metrics: _ActivityMetrics) -> None:
         scan, "activity_last_activity_source", metrics.last_activity_source, "source",
         is_available=metrics.last_activity_at is not None,
         error_reason="" if metrics.last_activity_at is not None else "источник последней активности недоступен",
-        # last_activity_source — это маркер источника (напр. "merge_requests");
-        # ссылкой на файл/pipeline он не является, поэтому не сохраняем его.
         source_reference=repo_url if metrics.last_activity_at is not None else "",
     )
 
@@ -339,7 +280,6 @@ def _save_metric_samples(scan: Scan, metrics: _ActivityMetrics) -> None:
         _save_metric_sample(
             scan, f"activity_{endpoint}_fetch_error", None,
             is_available=False, error_reason=reason,
-            # Для ошибки подтверждающего артефакта нет — ссылку не пишем.
             source_reference="",
         )
 
@@ -452,8 +392,6 @@ def run_activity_scan(
     git_client: SourceCraftGitClient | None,
     include_commits: bool,
 ) -> HealthScore:
-    """Собирает данные по активности репозитория и сохраняет результат"""
-
     repository = scan.repository
     now = timezone.now()
 
@@ -504,11 +442,6 @@ def run_activity_scan(
 def run(scan_id: int) -> int:
     scan = Scan.objects.select_related("repository").get(pk=scan_id)
 
-    # Критерий — то, КАК запущен скан:
-    # SCHEDULE/MANUAL — массовый плановый скан (потенциально тысячи
-    # репозиториев разом), commits в нём не считаются;
-    # USER — одиночный ручной запуск для одного репозитория,
-    # commits считаются через git clone.
     include_commits = scan.triggered_by == Scan.TriggeredBy.USER
 
     token = None
