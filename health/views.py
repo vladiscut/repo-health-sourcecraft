@@ -13,6 +13,7 @@ from django.views import View
 from django.views.generic import DetailView, ListView
 
 from core.celery import USER_QUEUE_NAME, SCHEDULE_QUEUE_NAME
+from health.formatters import humanize_number
 from health.models import Finding, Repository, Scan, UserRepositoryAccess
 from health.repo_ordering import annotate_visible_score
 from health.reports import build_markdown_report, with_overall_impacts
@@ -284,7 +285,7 @@ class RepoListView(ListView):
                 "language": self.language,
                 "languages": public_languages(),
                 "sort": self.selected_sort,
-                "total_count": page.paginator.count,
+                "total_count": humanize_number(page.paginator.count),
                 "filters_active": bool(
                     self.query or self.language or self.selected_sort != "score"
                 ),

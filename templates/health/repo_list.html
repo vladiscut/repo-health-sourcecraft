@@ -4,7 +4,6 @@
 <h1>Открытые репозитории</h1>
 <p class="lead">
     {{ total_count }} публичных репозиториев SourceCraft{% if filters_active %} по выбранным фильтрам{% endif %}.
-    Score появится после скана; сейчас в каталоге рейтинг платформы и реакции.
 </p>
 
 <form method="get" class="toolbar">
@@ -50,7 +49,7 @@
             </td>
             <td>{{ item.repo.language|default:"—" }}</td>
             <td>
-                <span class="rating" title="рейтинг SourceCraft">{{ item.repo.rating_display }}</span>
+                <div class="rating" title="рейтинг SourceCraft">{{ item.repo.rating_display }}</div>
                 {% if item.repo.percentile_display %}
                 <div class="rating-meta">{{ item.repo.percentile_display }}</div>
                 {% endif %}

@@ -6,7 +6,7 @@ import shutil
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from health.models import Scan, Repository
+from health.models import Scan
 from integrations.git import get_scan_repo_dir
 
 logger = logging.getLogger(__name__)
@@ -43,4 +43,10 @@ def cleanup_repo_health_score(sender, instance: Scan, **kwargs) -> None:
     repo = instance.repository
     if not repo.scans.exists():
         repo.health_score = None
-        repo.save(update_fields=['health_score'])
+        repo.last_commit_sha_processed = ""
+        repo.last_scanned_at = None
+        repo.save(update_fields=[
+            "health_score",
+            "last_commit_sha_processed",
+            "last_scanned_at",
+        ])
