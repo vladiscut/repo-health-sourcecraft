@@ -6,8 +6,6 @@ from health.formatters import format_percentile, format_rating
 
 
 class Profile(models.Model):
-    """Профиль пользователя, вошедшего через Я ID."""
-
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -66,8 +64,6 @@ class Profile(models.Model):
 
 
 class UserRepositoryAccess(models.Model):
-    """Репозитории SourceCraft, доступные пользователю."""
-
     class Status(models.TextChoices):
         GRANTED = "granted", "доступ есть"
         CHECKING = "checking", "проверяем доступ"
@@ -116,8 +112,6 @@ class UserRepositoryAccess(models.Model):
 
 
 class Repository(models.Model):
-    """Репозиторий SourceCraft"""
-
     class VisibilityType(models.TextChoices):
         PUBLIC = "public", "public"
         INTERNAL = "internal", "internal"
@@ -267,8 +261,6 @@ class Repository(models.Model):
 
 
 class Scan(models.Model):
-    """Один запуск анализа репозитория — неизменяемый снимок результата."""
-
     class Status(models.TextChoices):
         PENDING = "pending", "в очереди"
         RUNNING = "running", "идёт"
@@ -353,8 +345,6 @@ class Scan(models.Model):
 
 
 class MetricSample(models.Model):
-    """Одна собранная метрика внутри категории для конкретного прогона анализа."""
-
     class Category(models.TextChoices):
         DOCS = "docs", "Документация"
         CI_CD = "ci_cd", "CI/CD"

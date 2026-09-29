@@ -1,5 +1,3 @@
-"""Клиент API SourceCraft."""
-
 import logging
 import time
 from functools import lru_cache
@@ -78,8 +76,6 @@ def _get_shared_session() -> requests.Session:
 
 
 class SourceCraftError(RuntimeError):
-    """Базовая ошибка при обращении к ресурсам SourceCraft (API или файлам)"""
-
     def __init__(
         self,
         message: str,
@@ -135,8 +131,6 @@ class RedisRateLimiter:
 
 
 class SourceCraftAPI:
-    """Общий HTTP-доступ: лимитер, ретраи и пагинация."""
-
     BASE_URL_SETTING_NAME: str = ""
     RATE_LIMIT_KEY_PREFIX: str = ""
 
@@ -187,8 +181,6 @@ class SourceCraftAPI:
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
     ) -> Any:
-        """Выполняет запрос и возвращает разобранный JSON"""
-
         url = f"{self.base_url}{path}"
         clean_params = {
             key: value for key, value in (params or {}).items()
@@ -246,8 +238,6 @@ class SourceCraftAPI:
         page_size: int = DEFAULT_PAGE_SIZE,
         page_token: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Загружает одну страницу и возвращает (items, next_page_token)"""
-
         query = dict(params or {})
         query["page_size"] = page_size
         if page_token:
@@ -300,8 +290,6 @@ class SourceCraftAPI:
         params: dict[str, Any] | None = None,
         page_size: int = DEFAULT_PAGE_SIZE,
     ) -> Iterator[dict[str, Any]]:
-        """Итерирует элементы пагинации, пока API возвращает next_page_token"""
-
         for items, _ in self._iter_pages(
             path,
             collection_key=collection_key,
@@ -311,8 +299,6 @@ class SourceCraftAPI:
             yield from items
 
     def close(self) -> None:
-        """Закрывает HTTP-сессию"""
-
         if self._owns_session:
             self.session.close()
 
@@ -324,8 +310,6 @@ class SourceCraftAPI:
 
 
 class SourceCraftClient(SourceCraftAPI):
-    """Клиент API SourceCraft"""
-
     BASE_URL_SETTING_NAME = "SOURCECRAFT_API_BASE_URL"
     RATE_LIMIT_KEY_PREFIX = "sourcecraft:rl"
 
@@ -336,8 +320,6 @@ class SourceCraftClient(SourceCraftAPI):
         page_size: int = DEFAULT_PAGE_SIZE,
         start_page_token: str | None = None,
     ) -> Iterator[tuple[list[dict[str, Any]], str | None]]:
-        """Страницы публичных репозиториев."""
-
         params: dict[str, Any] = {}
         if filter_query:
             params["filter"] = filter_query
@@ -356,8 +338,6 @@ class SourceCraftClient(SourceCraftAPI):
         filter_query: str | None = None,
         sort_by: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Возвращает список публичных репозиториев"""
-
         params: dict[str, Any] = {}
         if filter_query:
             params["filter"] = filter_query
@@ -372,13 +352,9 @@ class SourceCraftClient(SourceCraftAPI):
         )
 
     def get_my_profile(self) -> dict[str, Any]:
-        """Возвращает профиль текущего пользователя SourceCraft."""
-
         return self._request("GET", "/user") or {}
 
     def get_billing_organization(self) -> dict[str, Any] | None:
-        """Организация биллинга CodeAssist, если есть."""
-
         try:
             return self._request("GET", "/user/code-assist-billing-org") or None
         except SourceCraftError as exc:
@@ -387,8 +363,6 @@ class SourceCraftClient(SourceCraftAPI):
             raise
 
     def list_organization_repositories(self, org_slug: str) -> list[dict[str, Any]]:
-        """Возвращает репозитории организации, доступные текущему токену."""
-
         return list(
             self._paginate(
                 f"/orgs/{org_slug}/repos",
@@ -397,8 +371,6 @@ class SourceCraftClient(SourceCraftAPI):
         )
 
     def list_accessible_repositories(self) -> list[dict[str, Any]]:
-        """Собирает репозитории пользователя: личная орг и биллинг-орг."""
-
         profile = self.get_my_profile()
         username = profile.get("username") or ""
         org_slugs: list[str] = []
@@ -427,8 +399,6 @@ class SourceCraftClient(SourceCraftAPI):
         return result
 
     def get_repository(self, repo_id: str) -> dict[str, Any]:
-        """Возвращает репозиторий по id"""
-
         data = self._request("GET", f"/repos/id:{repo_id}")
         return data or {}
 
@@ -437,8 +407,6 @@ class SourceCraftClient(SourceCraftAPI):
         repo_id: str,
         since: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Возвращает список файлов репозитория"""
-
         params: dict[str, Any] = {
             "revision": since or "HEAD",
             "recursive": 1,
@@ -452,8 +420,6 @@ class SourceCraftClient(SourceCraftAPI):
         )
 
     def get_ci_pipelines(self, repo_id: str) -> list[dict[str, Any]]:
-        """Возвращает запуски CI/CD"""
-
         return list(
             self._paginate(
                 f"/repos/id:{repo_id}/cicd/runs",
@@ -462,8 +428,6 @@ class SourceCraftClient(SourceCraftAPI):
         )
 
     def get_issues(self, repo_id: str) -> list[dict[str, Any]]:
-        """Возвращает задачи репозитория"""
-
         return list(
             self._paginate(
                 f"/repos/id:{repo_id}/issues",
@@ -472,8 +436,6 @@ class SourceCraftClient(SourceCraftAPI):
         )
 
     def get_issues_comments(self, issue_id: str | int) -> list[dict[str, Any]]:
-        """Комментарии задачи."""
-
         params = {"sort_by": "created_at"}
 
         return list(
@@ -485,8 +447,6 @@ class SourceCraftClient(SourceCraftAPI):
         )
 
     def get_merge_requests(self, repo_id: str) -> list[dict[str, Any]]:
-        """Возвращает pull requests репозитория"""
-
         return list(
             self._paginate(
                 f"/repos/id:{repo_id}/pulls",
@@ -495,8 +455,6 @@ class SourceCraftClient(SourceCraftAPI):
         )
 
     def get_contributors(self, repo_id: str) -> list[dict[str, Any]]:
-        """Возвращает участников репозитория"""
-
         return list(
             self._paginate(
                 f"/repos/id:{repo_id}/contributors",
@@ -505,8 +463,6 @@ class SourceCraftClient(SourceCraftAPI):
         )
 
     def get_releases(self, repo_id: str) -> list[dict[str, Any]]:
-        """Возвращает релизы репозитория"""
-
         return list(
             self._paginate(
                 f"/repos/id:{repo_id}/releases",
@@ -515,8 +471,6 @@ class SourceCraftClient(SourceCraftAPI):
         )
 
     def get_default_branch_hash(self, repo_id: str, branch: str) -> str | None:
-        """Возвращает hash ветки по умолчанию"""
-
         collection_key = "branches"
         params = {"filter": branch}
         data = self._request(
@@ -538,8 +492,6 @@ def _quote_repo_path(relative_path: str) -> str:
 
 
 class SourceCraftFileClient(SourceCraftAPI):
-    """Клиент файлового ресурса SourceCraft (сырые файлы репозитория)"""
-
     BASE_URL_SETTING_NAME = "SOURCECRAFT_API_FILE_BASE_URL"
     RATE_LIMIT_KEY_PREFIX = "sourcecraft:file-rl"
 

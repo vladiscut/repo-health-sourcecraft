@@ -1,5 +1,3 @@
-"""Какой Scan показывать на карточке и что писать в notice."""
-
 from health.models import Repository, Scan
 
 

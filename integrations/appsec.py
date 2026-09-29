@@ -1,5 +1,3 @@
-"""Клиент SourceCraft Security API."""
-
 from typing import Any
 
 from integrations.sourcecraft import (
@@ -27,8 +25,6 @@ class AppSecClientError(SourceCraftError):
 
 
 class AppSecClient(SourceCraftAPI):
-    """Клиент AppSec API."""
-
     BASE_URL_SETTING_NAME = "SOURCECRAFT_API_APPSEC_BASE_URL"
     RATE_LIMIT_KEY_PREFIX = "sourcecraft:appsec-rl"
 
@@ -66,8 +62,6 @@ class AppSecClient(SourceCraftAPI):
         page_size: int = DEFAULT_PAGE_SIZE,
         page_token: str | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Одна страница списка."""
-
         query = dict(params or {})
         query["pageSize"] = page_size
         if page_token:
@@ -107,8 +101,6 @@ class AppSecClient(SourceCraftAPI):
         sourcecraft_id: str,
         scan_uuid: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Группы дефектов. ``GET /v1/defect-groups?gitRepo=``."""
-
         params: dict[str, Any] = {"gitRepo": sourcecraft_id}
         if scan_uuid:
             params["scanUuid"] = scan_uuid
@@ -126,8 +118,6 @@ class AppSecClient(SourceCraftAPI):
         sourcecraft_id: str,
         defect_group_uuid: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Находки. ``GET /v1/findings?gitRepo=``."""
-
         params: dict[str, Any] = {"gitRepo": sourcecraft_id}
         if defect_group_uuid:
             params["defectGroupUuid"] = defect_group_uuid

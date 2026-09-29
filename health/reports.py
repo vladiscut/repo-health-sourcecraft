@@ -1,5 +1,3 @@
-"""Сборка выгружаемого Markdown-отчёта по репозиторию."""
-
 from django.template.loader import render_to_string
 
 from health.models import HealthScore, MetricSample, Repository, Scan

@@ -1,4 +1,3 @@
-"""Запуск скана и сбор итогового балла."""
 import datetime
 import logging
 import shutil
@@ -38,7 +37,7 @@ SCAN_STALE_AFTER = datetime.timedelta(
 
 
 class ActiveScanExistsError(Exception):
-    """По этому репозиторию уже есть незавершённый Scan."""
+    pass
 
 
 def _mark_stale_scans_as_failed(queryset) -> int:
@@ -105,8 +104,6 @@ def _claim_pending_or_create_running(
     user_id: int | None,
     commit_sha: str,
 ) -> Scan:
-    """Забирает оставшийся PENDING или создаёт новый RUNNING Scan."""
-
     pending = (
         Scan.objects.filter(
             repository=repository,
@@ -221,7 +218,6 @@ def _create_empty_repo_scan(
             value=None,
             is_available=False,
             error_reason=reason,
-            # Пустой репозиторий — подтверждающего артефакта нет.
             source_reference="",
         )
         for category in ALL_CATEGORIES
@@ -308,7 +304,6 @@ def start_repository_scan(
         current_hash or last_commit or "",
     )
 
-    # Публичные категории
     category_tasks = [
         task_docs_scan.si(scan.id).set(queue=queue),
         task_code_health_scan.si(scan.id).set(queue=queue),
@@ -316,7 +311,6 @@ def start_repository_scan(
         task_issues_scan.si(scan.id).set(queue=queue),
     ]
 
-    # Приватные категории
     if user_id:
         category_tasks.append(task_cicd_scan.si(scan.id).set(queue=queue))
         category_tasks.append(task_security_scan.si(scan.id).set(queue=queue))
@@ -335,7 +329,6 @@ def start_repository_scan(
     workflow_tasks = []
 
     if user_id:
-        # Если скан запустил пользователь, то сперва получаем клон репозитория
         workflow_tasks.append(task_git_clone.si(scan.id).set(queue=queue))
 
     workflow_tasks.extend([
@@ -412,7 +405,6 @@ def aggregate_scan(scan_id: int) -> dict:
         overall_score = round(overall_score)
         HealthScore.objects.bulk_update(scored.values(), ["weight_used"])
     else:
-        # Ни по одной категории нет данных — Score не считаем
         overall_score = None
 
     no_data_scores = [hs for c, hs in by_category.items() if c not in scored]
@@ -529,8 +521,6 @@ def check_and_scan_repository(
     force: bool = False,
     user_id: int = None,
 ) -> dict:
-    """Проверка хеша + запуск скана при необходимости"""
-
     try:
         scan_id = start_repository_scan(
             repository_id,
@@ -559,8 +549,6 @@ def fix_stale_scans() -> None:
 
 
 def reap_orphan_clone_dirs() -> int:
-    """Удаляет каталоги клонов, которым больше не соответствует Scan"""
-
     clone_root = Path(settings.SCAN_REPO_DIR)
     if not clone_root.is_dir():
         return 0
@@ -573,7 +561,6 @@ def reap_orphan_clone_dirs() -> int:
 
         scan = Scan.objects.filter(pk=int(entry.name)).only("status").first()
         if scan is not None and scan.status not in terminal:
-            # Скан ещё жив — каталог клона нужен, не трогаем.
             continue
 
         try:

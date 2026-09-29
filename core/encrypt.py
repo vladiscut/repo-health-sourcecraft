@@ -1,5 +1,3 @@
-"""Шифрование текстовых полей через Fernet."""
-
 import base64
 
 from django.conf import settings

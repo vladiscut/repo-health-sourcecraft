@@ -1,5 +1,3 @@
-"""Git-доступ к репозиториям SourceCraft."""
-
 import logging
 import os
 import re
@@ -186,8 +184,6 @@ class SourceCraftGitClient:
         branch: str,
         scan_id: int,
     ) -> list[datetime]:
-        """Клонирует репозиторий и возвращает даты коммитов ветки"""
-
         if not org_slug or not repo_slug:
             raise SourceCraftError("Для истории коммитов нужны org_slug и repo_slug")
         if not self.token:
@@ -241,8 +237,6 @@ class SourceCraftGitClient:
         self,
         scan_id: int,
     ) -> list[datetime]:
-        """Возвращает даты коммитов"""
-
         repo_path = get_scan_repo_dir(scan_id)
         repo = None
 

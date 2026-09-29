@@ -1,5 +1,3 @@
-"""Категория issues."""
-
 import logging
 import statistics
 
@@ -318,8 +316,6 @@ def _build_findings(
 
 
 def run_issues_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
-    """Собирает данные по issues репозитория и сохраняет результат категории"""
-
     repository = scan.repository
     repo_id = repository.sourcecraft_id
     now = timezone.now()

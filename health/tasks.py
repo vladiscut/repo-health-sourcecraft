@@ -10,9 +10,6 @@ from integrations.sourcecraft import SourceCraftError as APIErr
 
 @worker_ready.connect
 def task_worker_ready_update_all_public_repos(sender, **kwargs) -> None:
-    """Запускает получение всех публичных репозиториев при
-    старте сервиса, если в БД пусто"""
-
     if Repository.objects.all().exists():
         return
 
@@ -28,9 +25,6 @@ def task_update_all_public_repos(
     page_token: str | None = None,
     sync_started_at: str | None = None,
 ) -> None:
-    """Обрабатывает страницы с репозиториями порциями и, если есть
-    еще страница, ставит следующую задачу с курсором `page_token`"""
-
     from health.repository import update_all_public_repositories
 
     sync_dt = parse_datetime(sync_started_at) if sync_started_at else timezone.now()
@@ -49,8 +43,6 @@ def task_update_all_public_repos(
     bind=True, max_retries=3, default_retry_delay=30, autoretry_for=(APIErr,),
 )
 def task_issues_scan(self, scan_id: int) -> int:
-    """Прогоняет категорию ISSUES для существующего Scan"""
-
     from health.issues_scan import run
     from health.orchestrator import _fallback_health_score
 
@@ -68,8 +60,6 @@ def task_issues_scan(self, scan_id: int) -> int:
     bind=True, max_retries=3, default_retry_delay=30, autoretry_for=(APIErr,),
 )
 def task_docs_scan(self, scan_id: int) -> int:
-    """Прогоняет категорию DOCS для существующего Scan"""
-
     from health.docs_scan import run
     from health.orchestrator import _fallback_health_score
 
@@ -87,8 +77,6 @@ def task_docs_scan(self, scan_id: int) -> int:
     bind=True, max_retries=3, default_retry_delay=30, autoretry_for=(APIErr,),
 )
 def task_cicd_scan(self, scan_id: int) -> int:
-    """Прогоняет категорию CI_CD для существующего Scan"""
-
     from health.cicd_scan import run
     from health.orchestrator import _fallback_health_score
 
@@ -106,8 +94,6 @@ def task_cicd_scan(self, scan_id: int) -> int:
     bind=True, max_retries=3, default_retry_delay=30, autoretry_for=(APIErr,),
 )
 def task_security_scan(self, scan_id: int) -> int:
-    """Прогоняет категорию SECURITY для существующего Scan"""
-
     from health.security_scan import run
     from health.orchestrator import _fallback_health_score
 
@@ -125,8 +111,6 @@ def task_security_scan(self, scan_id: int) -> int:
     bind=True, max_retries=3, default_retry_delay=30, autoretry_for=(APIErr,),
 )
 def task_activity_scan(self, scan_id: int) -> int:
-    """Прогоняет категорию ACTIVITY для существующего Scan"""
-
     from health.activity_scan import run
     from health.orchestrator import _fallback_health_score
 
@@ -144,8 +128,6 @@ def task_activity_scan(self, scan_id: int) -> int:
     bind=True, max_retries=3, default_retry_delay=30, autoretry_for=(APIErr,),
 )
 def task_code_health_scan(self, scan_id: int) -> int:
-    """Прогоняет категорию CODE_HEALTH для существующего Scan"""
-
     from health.code_health_scan import run
     from health.orchestrator import _fallback_health_score
 
@@ -161,16 +143,12 @@ def task_code_health_scan(self, scan_id: int) -> int:
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=15)
 def task_aggregate_scan(self, _category_healthscore_ids, scan_id: int) -> None:
-    """Считает Repo Health Score по категориям"""
-
     from health.orchestrator import aggregate_scan
     aggregate_scan(scan_id)
 
 
 @shared_task
 def task_scan_all_public_repositories() -> None:
-    """Запускает сканирование для каждого публичного репозитория"""
-
     from health.orchestrator import scan_all_public_repositories
     scan_all_public_repositories()
 
@@ -188,8 +166,6 @@ def task_reap_stale_scans() -> None:
 
 @shared_task
 def task_reap_orphan_clone_dirs() -> int:
-    """Удаляет каталоги клонов, для которых в БД больше нет Scan."""
-
     from health.orchestrator import reap_orphan_clone_dirs
     return reap_orphan_clone_dirs()
 
@@ -217,8 +193,6 @@ def task_check_and_scan_repository(
     user_id: int = None,
     force: bool = False,
 ) -> None:
-    """Проверка хеша + запуск скана при необходимости для олного репозитория"""
-
     try:
         from health.orchestrator import check_and_scan_repository
         check_and_scan_repository(repository_id, force, user_id)
@@ -233,8 +207,6 @@ def task_confirm_access_and_scan(
     repository_id: int,
     user_id: int,
 ) -> None:
-    """Спрашивает SourceCraft и только потом запускает личный скан."""
-
     from health.access_check import (
         SOURCECRAFT_SILENT_TEXT,
         release_access_check,
@@ -261,16 +233,12 @@ def task_confirm_access_and_scan(
 
 @shared_task(bind=True, max_retries=2, default_retry_delay=15)
 def task_git_clone(self, scan_id: int) -> list[int]:
-    """Клонирование репо"""
-
     from health.git_clone import run
     run(scan_id)
 
 
 @shared_task
 def task_clear_repo_tree(scan_id: int) -> None:
-    """Удаляет запись кэша дерева для скана после последнего потребителя"""
-
     from health.models import Scan
     from health.tree_cache import clear_repository_tree_cache
 

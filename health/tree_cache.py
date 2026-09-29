@@ -1,5 +1,3 @@
-"""Кэш дерева файлов репозитория."""
-
 import json
 import logging
 import time

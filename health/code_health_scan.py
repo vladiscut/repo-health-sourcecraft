@@ -1,5 +1,3 @@
-"""Категория «состояние кода»."""
-
 import logging
 import re
 

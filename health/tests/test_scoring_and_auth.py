@@ -205,7 +205,7 @@ class OverallFindingImpactTests(SimpleTestCase):
 
 
 class SubmetricWeightsMapTests(SimpleTestCase):
-    """Task 1.2: единая карта весов; сумма весов каждой категории = 1.0."""
+    """Единая карта весов; сумма весов каждой категории = 1.0."""
 
     def _assert_sums_to_one(self, weights):
         self.assertAlmostEqual(sum(weights.values()), 1.0, places=6)

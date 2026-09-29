@@ -12,8 +12,6 @@ logger = logging.getLogger(__name__)
 
 
 def sync_user_repositories(profile: Profile) -> int:
-    """Тянет доступные пользователю репозитории SourceCraft и пишет доступ."""
-
     token = profile.sourcecraft_token
     if not token:
         raise SourceCraftError("Нет токена SourceCraft")
@@ -52,8 +50,6 @@ def sync_user_repositories(profile: Profile) -> int:
 
 
 def sourcecraft_token_works(token: str) -> tuple[bool, str]:
-    """Проверяет, что токен ходит в API SourceCraft. Возвращает (ok, username)."""
-
     if not token:
         return False, ""
 
@@ -69,8 +65,6 @@ def sourcecraft_token_works(token: str) -> tuple[bool, str]:
 
 
 def upsert_yandex_user(info: dict, tokens: dict) -> object:
-    """Создаёт или обновляет пользователя Django по ответу Я ID."""
-
     user_model = get_user_model()
     ya_id = str(info.get("id") or "")
     if not ya_id:

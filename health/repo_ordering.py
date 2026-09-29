@@ -1,5 +1,3 @@
-"""Порядок публичного списка по Score, который виден в таблице."""
-
 from django.db.models import FloatField
 from django.db.models.expressions import RawSQL
 

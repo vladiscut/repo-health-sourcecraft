@@ -1,5 +1,3 @@
-"""HTML-страницы рейтинга, карточки и выгрузки отчёта."""
-
 from urllib.parse import urlencode
 
 from django.contrib import messages

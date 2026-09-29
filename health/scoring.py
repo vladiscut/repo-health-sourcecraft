@@ -1,5 +1,3 @@
-"""Расчёт Repo Health Score."""
-
 import math
 
 from health.models import Finding, MetricSample

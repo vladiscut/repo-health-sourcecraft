@@ -1,5 +1,3 @@
-"""Разбивка балла категории для карточки."""
-
 from health.models import MetricSample
 from health.scoring import (
     ACTIVITY_SUBMETRIC_WEIGHTS_WITH_COMMITS,
