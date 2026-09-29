@@ -201,6 +201,12 @@ def can_view_repository(request: HttpRequest, repo: Repository) -> bool:
         return True
     if not request.user.is_authenticated:
         return False
+    # Проверка уже в очереди: карточку показывает лоадер, SourceCraft спрашивает воркер.
+    if (
+        user_has_saved_access(request.user, repo)
+        and _active_scan(repo) is not None
+    ):
+        return True
     decision = repository_access_for_page(request.user, repo)
     if decision == "unavailable":
         raise PageAccessUnavailable()

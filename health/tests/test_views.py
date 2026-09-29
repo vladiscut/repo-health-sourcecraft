@@ -531,6 +531,27 @@ class RepoDetailAndExportTests(TestCase):
         self.assertEqual(response.status_code, 404)
 
     @patch("health.access_check.SourceCraftClient")
+    def test_running_access_check_opens_card_without_api(self, client_cls):
+        user = get_user_model().objects.create_user("owner", password="x")
+        make_profile(user, sourcecraft_pat="pat-still-valid")
+        grant_access(user, self.private)
+        self.client.force_login(user)
+        Scan.objects.create(
+            repository=self.private,
+            status=Scan.Status.CHECKING,
+            triggered_by=Scan.TriggeredBy.USER,
+            triggered_by_user=user,
+        )
+
+        response = self.client.get(
+            reverse("health:repo-detail", args=["hidden", "secret"])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Проверяем доступ к репозиторию")
+        client_cls.assert_not_called()
+
+    @patch("health.access_check.SourceCraftClient")
     def test_owner_can_open_private_detail_when_api_confirms(self, client_cls):
         user = get_user_model().objects.create_user("owner", password="x")
         profile = make_profile(user, sourcecraft_pat="pat-still-valid")
