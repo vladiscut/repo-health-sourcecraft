@@ -171,3 +171,7 @@ YANDEX_USERINFO_URL = env(
     default="https://login.yandex.ru/info",
 )
 YANDEX_OAUTH_SCOPE = env("YANDEX_OAUTH_SCOPE", default="login:info login:email")
+
+# Сводка на карточке. Пустые значения скрывают кнопку, Score от них не зависит.
+YANDEX_GPT_FOLDER_ID = env("YANDEX_GPT_FOLDER_ID", default="")
+YANDEX_GPT_API_KEY = env("YANDEX_GPT_API_KEY", default="")

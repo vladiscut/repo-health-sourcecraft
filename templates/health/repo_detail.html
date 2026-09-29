@@ -135,6 +135,33 @@
 {% endif %}
 {% endif %}
 
+{% if not scan_in_progress and scan %}
+{% if ai_summary or ai_configured %}
+<section>
+    <h2>Сводка YandexGPT</h2>
+    {% if ai_summary %}
+    <p>{{ ai_summary.summary }}</p>
+    {% if ai_summary.steps %}
+    <ol class="ai-steps">
+        {% for step in ai_summary.steps %}
+        <li><b>{{ step.finding_title }}.</b> {{ step.action }}</li>
+        {% endfor %}
+    </ol>
+    {% endif %}
+    <p class="muted">Текст YandexGPT по фактам этого скана. На Repo Health Score не влияет.</p>
+    {% endif %}
+    {% if ai_configured %}
+    <form method="post" action="{% url 'health:repo-ai-summary' repo.org_slug repo.repo_slug %}" onsubmit="this.querySelector('button').classList.add('busy')">
+        {% csrf_token %}
+        {% if from_me %}<input type="hidden" name="from" value="me">{% endif %}
+        <button type="submit">{% if ai_summary %}Обновить сводку{% else %}Сводка YandexGPT{% endif %}</button>
+        <span class="loader ms-1" aria-hidden="true"></span>
+    </form>
+    {% endif %}
+</section>
+{% endif %}
+{% endif %}
+
 <section>
     <h2>Находки и рекомендации</h2>
     {% if scan_in_progress %}

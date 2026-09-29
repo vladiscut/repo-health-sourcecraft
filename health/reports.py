@@ -1,5 +1,6 @@
 from django.template.loader import render_to_string
 
+from health.ai_summary import stored_summary
 from health.models import HealthScore, MetricSample, Repository, Scan
 from health.scan_display import scan_for_card
 from health.scoring import (
@@ -155,6 +156,7 @@ def build_markdown_report(repository: Repository) -> str:
             "scan_notice": scan_notice,
             "categories": categories,
             "findings": findings,
+            "ai_summary": stored_summary(scan),
             "has_null": any(row["total"] is None for row in categories),
             "analyzed_at": scan.finished_at if scan else None,
         },

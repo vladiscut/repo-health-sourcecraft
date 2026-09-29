@@ -21,6 +21,16 @@
 Категории без данных не обнуляют итог: их вес перераспределяется между категориями, где балл есть.
 {% endif %}
 
+{% if ai_summary %}
+## Сводка YandexGPT
+
+{{ ai_summary.summary }}
+
+{% for step in ai_summary.steps %}- **{{ step.finding_title }}.** {{ step.action }}
+{% endfor %}
+Текст подготовлен YandexGPT по фактам этого скана и в расчёт Score не входит.
+
+{% endif %}
 ## Рекомендации
 
 {% for finding in findings %}- **[{{ finding.get_severity_display }}]** {{ finding.title }}{% if finding.category %} ({{ finding.get_category_display }}){% endif %}

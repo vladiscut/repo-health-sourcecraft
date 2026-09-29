@@ -116,8 +116,10 @@
 
 ## Внешние сервисы и AI
 
-Используются API SourceCraft, raw SourceCraft, AppSec SourceCraft, git SourceCraft и OAuth Я ID. Других внешних аналитических сервисов нет.
+Используются API SourceCraft, raw SourceCraft, AppSec SourceCraft, git SourceCraft и OAuth Я ID.
 
 Клиент raw SourceCraft (`GET /raw/{org}/{repo}/{revision}/{path}` на `raw.sourcecraft.tech`) читает текст файлов публичного репозитория. Git clone для чтения файлов есть только у личного запуска: на публичном скане клона нет.
 
 Балл и находки собираются правилами из фактов, которые вернули API, дерево файлов и текст файлов.
+
+Сводка YandexGPT — отдельный вызов YandexGPT Lite (`yandexgpt-lite/latest`) по кнопке на карточке. В запрос уходят итог, категории и до пяти находок уже завершённого скана. Ответ пишется в `Scan.raw["ai"]` и в Markdown. Плановый обход каталога модель не вызывает. Пустые `YANDEX_GPT_FOLDER_ID` и `YANDEX_GPT_API_KEY`, таймаут или ошибка API оставляют карточку без текста и не меняют статус скана.

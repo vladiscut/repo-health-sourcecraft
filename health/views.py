@@ -27,6 +27,7 @@ from health.personal_scan import (
     user_has_saved_access,
 )
 from health.repo_ordering import annotate_visible_score
+from health.ai_summary import ai_configured, generate_and_store, stored_summary
 from health.reports import build_markdown_report, with_overall_impacts
 from health.scan_display import scan_for_card
 from health.score_breakdown import rows_for_scores
@@ -467,6 +468,8 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                 ),
                 "phase_texts": PHASE_TEXT,
                 "scan_notice": scan_notice,
+                "ai_configured": ai_configured(),
+                "ai_summary": stored_summary(scan),
                 "from_me": from_me,
                 "back_url": (
                     reverse("health:my-repos")
@@ -492,6 +495,46 @@ class RepoRescanView(RepositoryAccessMixin, View):
             raise Http404()
         if result == "active":
             messages.info(request, "Анализ этого репозитория уже идёт.")
+        return _repo_detail_redirect(request, org_slug, repo_slug)
+
+
+class RepoAiSummaryView(RepositoryAccessMixin, View):
+    http_method_names = ["post"]
+
+    def post(self, request, org_slug, repo_slug):
+        repo = self.get_repository()
+        if _active_scan(repo) is not None or access_check_in_progress(repo):
+            messages.info(request, "Сводка доступна после завершения анализа.")
+            return _repo_detail_redirect(request, org_slug, repo_slug)
+        scan, _notice = scan_for_card(repo)
+        if scan is None:
+            messages.info(request, "Сначала нужен завершённый анализ.")
+            return _repo_detail_redirect(request, org_slug, repo_slug)
+        findings = with_overall_impacts(scan)
+        presented = _present(scan)
+        can_analyze = user_has_saved_access(request.user, repo)
+        from_me = _opened_from_personal_list(request)
+        show_owner = repo.visibility != Repository.VisibilityType.PUBLIC or (
+            from_me and can_analyze
+        )
+        shown = presented if show_owner else _without_owner_only(presented)
+        if not show_owner:
+            findings = [
+                item
+                for item in findings
+                if item.category not in _OWNER_ONLY_CATEGORIES
+            ]
+        categories = shown["categories"] if shown else []
+        overall = shown["total"] if shown else None
+        if generate_and_store(
+            scan,
+            findings=findings,
+            categories=categories,
+            overall=overall,
+        ):
+            messages.success(request, "Сводка готова.")
+        else:
+            messages.error(request, "Сводку сейчас не удалось получить.")
         return _repo_detail_redirect(request, org_slug, repo_slug)
 
 

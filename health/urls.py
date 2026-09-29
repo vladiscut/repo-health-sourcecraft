@@ -29,6 +29,11 @@ urlpatterns = [
         name="repo-rescan",
     ),
     path(
+        "repos/<str:org_slug>/<str:repo_slug>/ai-summary/",
+        views.RepoAiSummaryView.as_view(),
+        name="repo-ai-summary",
+    ),
+    path(
         "repos/<str:org_slug>/<str:repo_slug>/scan-status/",
         views.RepoScanStatusView.as_view(),
         name="repo-scan-status",
