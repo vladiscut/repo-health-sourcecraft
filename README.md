@@ -20,14 +20,13 @@
 
 ## Как поднять локально
 
-Нужен Docker.
+В ОС должны быть установлены: Docker, docker compose v2, git
 
-```powershell
-copy .env.example .env
-docker compose up --build
+```bash
+git clone https://git@git.sourcecraft.dev/lct-hackaton-2026/case-18-repo-health-score-team-47.git
+cd case-18-repo-health-score-team-47
+cp .env.example .env
 ```
-
-Откройте [http://127.0.0.1:8002/](http://127.0.0.1:8002/)
 
 В `.env` заполните токены.
 
@@ -46,7 +45,11 @@ docker compose up --build
 - `YANDEX_GPT_FOLDER_ID` — идентификатор каталога
 - `YANDEX_GPT_API_KEY` — API-ключ сервисного аккаунта с ролью `ai.languageModels.user`
 
-После записи ключей в `.env` перезапустите контейнер `web-repo-health`: процесс читает окружение только при старте.
+Запустите сборку докер контейнеров
+```bash
+docker compose up --build
+```
+Откройте [http://127.0.0.1:8002/](http://127.0.0.1:8002/)
 
 
 | Адрес                  | Что там                                                                                                                               |
