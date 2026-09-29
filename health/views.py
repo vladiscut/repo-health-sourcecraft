@@ -19,6 +19,7 @@ from health.access_check import (
     PageAccessUnavailable,
     repository_access_for_page,
 )
+from health.formatters import humanize_number
 from health.models import Finding, Repository, Scan
 from health.personal_scan import (
     ACCESS_CHECK_TEXT,
@@ -316,7 +317,7 @@ class RepoListView(ListView):
                 "language": self.language,
                 "languages": public_languages(),
                 "sort": self.selected_sort,
-                "total_count": page.paginator.count,
+                "total_count": humanize_number(page.paginator.count),
                 "filters_active": bool(
                     self.query or self.language or self.selected_sort != "score"
                 ),

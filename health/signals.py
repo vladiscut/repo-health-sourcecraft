@@ -3,7 +3,7 @@
 import logging
 import shutil
 
-from django.db.models.signals import post_save
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
 from health.models import Scan
@@ -34,3 +34,19 @@ def cleanup_scan_clone_dir(sender, instance: Scan, **kwargs) -> None:
             repo_path,
             exc,
         )
+
+
+@receiver(post_delete, sender=Scan)
+def cleanup_repo_health_score(sender, instance: Scan, **kwargs) -> None:
+    """Обнуляет Repo Health Score если у репо все сканы были удалены"""
+
+    repo = instance.repository
+    if not repo.scans.exists():
+        repo.health_score = None
+        repo.last_commit_sha_processed = ""
+        repo.last_scanned_at = None
+        repo.save(update_fields=[
+            "health_score",
+            "last_commit_sha_processed",
+            "last_scanned_at",
+        ])
