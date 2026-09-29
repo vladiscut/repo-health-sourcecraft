@@ -308,7 +308,7 @@ class RepoDetailAndExportTests(TestCase):
         )
         self.assertTrue(response.context["scan_in_progress"])
         self.assertIsNone(response.context["score"])
-        self.assertContains(response, "Идёт анализ")
+        self.assertContains(response, "Анализируем")
         self.assertContains(response, "data-scan-status-url")
         self.assertNotContains(response, "Скачать Markdown")
         self.assertNotContains(response, "Запустить анализ")
@@ -350,7 +350,7 @@ class RepoDetailAndExportTests(TestCase):
         self.assertContains(response, 'name="from" value="me"')
         self.assertContains(response, "Запустить анализ")
 
-    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_rescan_keeps_return_to_personal_list(self, apply_async):
         user = get_user_model().objects.create_user("owner", password="x")
         grant_access(user, self.public)
@@ -365,18 +365,17 @@ class RepoDetailAndExportTests(TestCase):
             kwargs={
                 "repository_id": self.public.id,
                 "user_id": user.id,
-                "force": True,
             },
             queue="analysis.user",
         )
         self.assertTrue(
             Scan.objects.filter(
                 repository=self.public,
-                status=Scan.Status.PENDING,
+                status=Scan.Status.CHECKING,
             ).exists()
         )
 
-    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_owner_rescan_uses_user_queue(self, apply_async):
         user = get_user_model().objects.create_user("owner", password="x")
         grant_access(user, self.public)
@@ -391,18 +390,17 @@ class RepoDetailAndExportTests(TestCase):
             kwargs={
                 "repository_id": self.public.id,
                 "user_id": user.id,
-                "force": True,
             },
             queue="analysis.user",
         )
         pending = Scan.objects.get(
             repository=self.public,
-            status=Scan.Status.PENDING,
+            status=Scan.Status.CHECKING,
         )
         self.assertEqual(pending.triggered_by, Scan.TriggeredBy.USER)
         self.assertEqual(pending.triggered_by_user_id, user.id)
 
-    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_public_stranger_cannot_rescan(self, apply_async):
         stranger = get_user_model().objects.create_user("stranger", password="x")
         self.client.force_login(stranger)
@@ -419,11 +417,11 @@ class RepoDetailAndExportTests(TestCase):
         self.assertFalse(
             Scan.objects.filter(
                 repository=self.public,
-                status=Scan.Status.PENDING,
+                status=Scan.Status.CHECKING,
             ).exists()
         )
 
-    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_rescan_hides_old_score_immediately(self, apply_async):
         user = get_user_model().objects.create_user("owner", password="x")
         grant_access(user, self.public)
@@ -435,8 +433,7 @@ class RepoDetailAndExportTests(TestCase):
         )
         self.assertTrue(response.context["scan_in_progress"])
         self.assertIsNone(response.context["score"])
-        self.assertContains(response, "Идёт анализ")
-        self.assertContains(response, "выгрузка недоступны")
+        self.assertContains(response, "Проверяем доступ к репозиторию")
         self.assertNotContains(response, "Запустить анализ")
         self.assertNotContains(response, "Скачать Markdown")
         apply_async.assert_called_once()
@@ -455,7 +452,7 @@ class RepoDetailAndExportTests(TestCase):
         self.assertRedirects(response, detail)
         self.assertContains(response, "Выгрузка недоступна")
 
-    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_rescan_while_active_does_not_queue_again(self, apply_async):
         user = get_user_model().objects.create_user("owner", password="x")
         grant_access(user, self.public)
@@ -505,7 +502,7 @@ class RepoDetailAndExportTests(TestCase):
         apply_async.assert_not_called()
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
-    @patch("health.user_repository.SourceCraftClient")
+    @patch("health.access_check.SourceCraftClient")
     def test_scan_query_on_private_with_access_queues_scan(
         self, client_cls, apply_async
     ):
@@ -533,7 +530,7 @@ class RepoDetailAndExportTests(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
-    @patch("health.user_repository.SourceCraftClient")
+    @patch("health.access_check.SourceCraftClient")
     def test_owner_can_open_private_detail_when_api_confirms(self, client_cls):
         user = get_user_model().objects.create_user("owner", password="x")
         profile = make_profile(user, sourcecraft_pat="pat-still-valid")
@@ -546,10 +543,11 @@ class RepoDetailAndExportTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        client_cls.assert_called_once_with(token="pat-still-valid")
+        self.assertEqual(client_cls.call_args.kwargs["token"], "pat-still-valid")
+        self.assertEqual(client_cls.call_args.kwargs["timeout"], 5.0)
         client_cls.return_value.get_repository.assert_called_once_with("private-1")
 
-    @patch("health.user_repository.SourceCraftClient")
+    @patch("health.access_check.SourceCraftClient")
     def test_stale_access_row_is_not_enough_when_api_denies(self, client_cls):
         user = get_user_model().objects.create_user("former", password="x")
         make_profile(user, sourcecraft_pat="pat-revoked-rights")
@@ -561,10 +559,11 @@ class RepoDetailAndExportTests(TestCase):
         )
 
         response = self.client.get(
-            reverse("health:repo-detail", args=["hidden", "secret"])
+            reverse("health:repo-detail", args=["hidden", "secret"]),
+            follow=True,
         )
 
-        self.assertEqual(response.status_code, 404)
+        self.assertContains(response, "Нет доступа к репозиторию.")
         self.assertFalse(
             UserRepositoryAccess.objects.filter(
                 user=user,
@@ -572,7 +571,7 @@ class RepoDetailAndExportTests(TestCase):
             ).exists()
         )
 
-    @patch("health.user_repository.SourceCraftClient")
+    @patch("health.access_check.SourceCraftClient")
     def test_private_detail_without_token_does_not_call_api(self, client_cls):
         user = get_user_model().objects.create_user("notoken", password="x")
         make_profile(user)
@@ -592,7 +591,7 @@ class RepoDetailAndExportTests(TestCase):
             ).exists()
         )
 
-    @patch("health.user_repository.SourceCraftClient")
+    @patch("health.access_check.SourceCraftClient")
     def test_api_outage_hides_private_repo_but_keeps_access_row(self, client_cls):
         user = get_user_model().objects.create_user("owner", password="x")
         make_profile(user, sourcecraft_pat="pat-still-valid")
@@ -604,10 +603,11 @@ class RepoDetailAndExportTests(TestCase):
         )
 
         response = self.client.get(
-            reverse("health:repo-detail", args=["hidden", "secret"])
+            reverse("health:repo-detail", args=["hidden", "secret"]),
+            follow=True,
         )
 
-        self.assertEqual(response.status_code, 404)
+        self.assertContains(response, "Не удалось проверить доступ, попробуйте ещё раз.")
         self.assertTrue(
             UserRepositoryAccess.objects.filter(
                 user=user,

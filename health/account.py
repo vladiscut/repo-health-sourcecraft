@@ -3,7 +3,6 @@
 from django.contrib import messages
 from django.contrib.auth import login, logout
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db import IntegrityError
 from django.db.models import Prefetch
 from django.http import Http404
 from django.shortcuts import get_object_or_404, redirect
@@ -11,14 +10,12 @@ from django.urls import reverse
 from django.views import View
 from django.views.generic import TemplateView
 
-from core.celery import USER_QUEUE_NAME
 from health.models import Profile, Repository, Scan, UserRepositoryAccess
-from health.tasks import task_check_and_scan_repository
+from health.personal_scan import ACCESS_CHECK_TEXT, enqueue_personal_scan
 from health.user_repository import (
     sourcecraft_token_works,
     sync_user_repositories,
     upsert_yandex_user,
-    user_can_access_repository,
 )
 from health.views import _present, _safe_next_url
 from integrations.sourcecraft import SourceCraftError
@@ -224,41 +221,13 @@ class AnalyzeMyRepoView(LoginRequiredMixin, View):
 
     def post(self, request, org_slug, repo_slug):
         repo = get_object_or_404(Repository, org_slug=org_slug, repo_slug=repo_slug)
-        if repo.visibility == Repository.VisibilityType.PUBLIC:
-            allowed = UserRepositoryAccess.objects.filter(
-                user=request.user,
-                repository=repo,
-            ).exists()
-        else:
-            allowed = user_can_access_repository(request.user, repo)
-        if not allowed:
-            raise Http404()
         fallback = reverse("health:repo-detail", args=[org_slug, repo_slug])
         next_url = _safe_next_url(request, fallback)
-        active = Scan.objects.filter(
-            repository=repo,
-            status__in=[Scan.Status.PENDING, Scan.Status.RUNNING],
-        ).exists()
-        if active:
+        result = enqueue_personal_scan(request.user, repo)
+        if result == "forbidden":
+            raise Http404()
+        if result == "active":
             messages.info(request, "Анализ этого репозитория уже идёт.")
-            return redirect(next_url)
-        try:
-            Scan.objects.create(
-                repository=repo,
-                status=Scan.Status.PENDING,
-                triggered_by=Scan.TriggeredBy.USER,
-                triggered_by_user=request.user,
-            )
-        except IntegrityError:
-            messages.info(request, "Анализ этого репозитория уже идёт.")
-            return redirect(next_url)
-        task_check_and_scan_repository.apply_async(
-            kwargs={
-                "repository_id": repo.id,
-                "user_id": request.user.id,
-                "force": True,
-            },
-            queue=USER_QUEUE_NAME,
-        )
-        messages.info(request, "Анализ поставлен в очередь.")
+        else:
+            messages.info(request, ACCESS_CHECK_TEXT)
         return redirect(next_url)

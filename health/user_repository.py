@@ -51,49 +51,6 @@ def sync_user_repositories(profile: Profile) -> int:
         client.close()
 
 
-def user_can_access_repository(user, repo: Repository) -> bool:
-    """Спрашивает SourceCraft, видит ли токен пользователя репозиторий сейчас.
-
-    Локальная связь UserRepositoryAccess для этого не годится: человека могли
-    убрать из команды или снять право на просмотр уже после синхронизации.
-    """
-
-    if not getattr(user, "is_authenticated", False):
-        return False
-
-    profile = Profile.objects.filter(user=user).first()
-    token = profile.sourcecraft_token if profile else None
-    if not token or not repo.sourcecraft_id:
-        return False
-
-    client = SourceCraftClient(token=token)
-    try:
-        client.get_repository(repo.sourcecraft_id)
-    except SourceCraftError as exc:
-        if exc.status_code in {403, 404}:
-            UserRepositoryAccess.objects.filter(
-                user=user,
-                repository=repo,
-            ).delete()
-            logger.info(
-                "Доступ к %s/%s снят: %s",
-                repo.org_slug,
-                repo.repo_slug,
-                exc,
-            )
-        else:
-            logger.warning(
-                "Не удалось подтвердить доступ к %s/%s: %s",
-                repo.org_slug,
-                repo.repo_slug,
-                exc,
-            )
-        return False
-    finally:
-        client.close()
-    return True
-
-
 def sourcecraft_token_works(token: str) -> tuple[bool, str]:
     """Проверяет, что токен ходит в API SourceCraft. Возвращает (ok, username)."""
 

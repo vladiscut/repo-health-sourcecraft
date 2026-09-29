@@ -40,7 +40,7 @@ SCAN_STALE_AFTER = datetime.timedelta(
 
 
 class ActiveScanExistsError(Exception):
-    """По этому репозиторию уже есть незавершённый Scan (pending/running)"""
+    """По этому репозиторию уже есть незавершённый Scan."""
 
 
 def _mark_stale_scans_as_failed(queryset) -> int:
@@ -49,7 +49,7 @@ def _mark_stale_scans_as_failed(queryset) -> int:
         f"Scan помечен как зависший: не завершался более {SCAN_STALE_AFTER}"
     )
     return queryset.filter(
-        status__in=[Scan.Status.PENDING, Scan.Status.RUNNING],
+        status__in=Scan.ACTIVE_STATUSES,
         created_at__lt=threshold,
     ).update(
         status=Scan.Status.FAILED,
@@ -473,7 +473,7 @@ def aggregate_scan(scan_id: int) -> dict:
 
 def scan_all_public_repositories():
     active_repo_ids = Scan.objects.filter(
-        status__in=[Scan.Status.PENDING, Scan.Status.RUNNING]
+        status__in=Scan.ACTIVE_STATUSES
     ).values_list("repository_id", flat=True)
 
     queryset = (
@@ -511,9 +511,7 @@ def check_and_scan_repository(
 
 def fix_stale_scans() -> None:
     reaped = _mark_stale_scans_as_failed(
-        Scan.objects.filter(
-            status__in=[Scan.Status.PENDING, Scan.Status.RUNNING]
-        )
+        Scan.objects.filter(status__in=Scan.ACTIVE_STATUSES)
     )
     if reaped:
         logger.warning(f"Переведено в FAILED зависших Scan: {reaped} шт.")

@@ -235,6 +235,38 @@ def task_check_and_scan_repository(
         raise
 
 
+@shared_task(bind=True, max_retries=2, default_retry_delay=20)
+def task_confirm_access_and_scan(
+    self,
+    repository_id: int,
+    user_id: int,
+) -> None:
+    """Спрашивает SourceCraft и только потом запускает личный скан."""
+
+    from health.access_check import (
+        SOURCECRAFT_SILENT_TEXT,
+        fail_personal_scan,
+        run_personal_access_check,
+    )
+
+    try:
+        outcome = run_personal_access_check(repository_id, user_id)
+    except Exception as exc:
+        fail_personal_scan(
+            repository_id,
+            user_id,
+            f"Запуск анализа не удался: {exc}",
+        )
+        raise
+
+    if outcome != "unavailable":
+        return
+    if self.request.retries >= self.max_retries:
+        fail_personal_scan(repository_id, user_id, SOURCECRAFT_SILENT_TEXT)
+        return
+    raise self.retry()
+
+
 @shared_task(bind=True, max_retries=2, default_retry_delay=15)
 def task_git_clone(self, scan_id: int) -> list[int]:
     """Клонирование репо"""
