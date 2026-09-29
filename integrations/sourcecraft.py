@@ -461,27 +461,26 @@ class SourceCraftClient(SourceCraftAPI):
             )
         )
 
-    def get_issues(self, repo_id: str, state: str | None = None) -> list[dict[str, Any]]:
+    def get_issues(self, repo_id: str) -> list[dict[str, Any]]:
         """Возвращает задачи репозитория"""
 
-        params: dict[str, Any] = {}
-        if state:
-            params["state"] = state
         return list(
             self._paginate(
                 f"/repos/id:{repo_id}/issues",
                 collection_key="issues",
-                params=params,
             )
         )
 
-    def get_issue_events(self, repo_id: str, issue_id: str | int) -> list[dict[str, Any]]:
+    def get_issues_comments(self, issue_id: str | int) -> list[dict[str, Any]]:
         """Комментарии задачи."""
+
+        params = {"sort_by": "created_at"}
 
         return list(
             self._paginate(
-                f"/repos/id:{repo_id}/issues/{issue_id}/comments",
-                collection_key="comments",
+                f"/issues/id:{issue_id}/comments",
+                collection_key="issue_comments",
+                params=params,
             )
         )
 

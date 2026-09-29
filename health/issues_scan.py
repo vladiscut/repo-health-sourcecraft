@@ -127,7 +127,7 @@ def _compute_metrics(
         if issue_id is None:
             continue
         try:
-            comments = client.get_issue_events(repo_id, issue_id)
+            comments = client.get_issues_comments(issue_id)
         except SourceCraftError as exc:
             logger.info(
                 f"Не удалось получить комментарии issue {issue_id}: {exc}"

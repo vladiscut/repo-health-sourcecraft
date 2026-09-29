@@ -315,18 +315,8 @@ def start_repository_scan(
         task_docs_scan.si(scan.id).set(queue=queue),
         task_code_health_scan.si(scan.id).set(queue=queue),
         task_activity_scan.si(scan.id).set(queue=queue),
+        task_issues_scan.si(scan.id).set(queue=queue),
     ]
-
-    if repository.issues > 0:
-        category_tasks.append(task_issues_scan.si(scan.id).set(queue=queue))
-    else:
-        # У репозитория нет ни одной задачи — категорию не сканируем
-        # сразу помечаем "Нет данных".
-        _fallback_health_score(
-            scan.id,
-            MetricSample.Category.ISSUES,
-            "в репозитории issues=0 — категория не сканировалась",
-        )
 
     # Приватные категории
     if user_id:
@@ -343,16 +333,16 @@ def start_repository_scan(
                 "публичный запуск — категория не сканировалась",
             )
 
-    header = group(*category_tasks)
+    header = group(category_tasks)
     workflow_tasks = []
 
     if user_id:
         # Если скан запустил пользователь, то сперва получаем клон репозитория
-        workflow_tasks.append(task_git_clone.s(scan.id).set(queue=queue))
+        workflow_tasks.append(task_git_clone.si(scan.id).set(queue=queue))
 
     workflow_tasks.extend([
-        chord(header, task_aggregate_scan.si(scan.id).set(queue=queue)),
-        task_clear_repo_tree.si(scan.id).set(queue=queue)
+        chord(header, task_aggregate_scan.s(scan.id).set(queue=queue)),
+        task_clear_repo_tree.si(scan.id).set(queue=queue),
     ])
 
     chain(*workflow_tasks).apply_async()

@@ -38,7 +38,7 @@ class IssuesMetricsTests(SimpleTestCase):
 class ComputeMetricsTests(SimpleTestCase):
     def _client(self, comments=None):
         client = Mock()
-        client.get_issue_events.return_value = comments or []
+        client.get_issues_comments.return_value = comments or []
         return client
 
     def _issue(self, **kwargs):
@@ -166,7 +166,7 @@ class IssuesScanTests(TestCase):
             client.get_issues.side_effect = SourceCraftError("boom", status_code=500)
         else:
             client.get_issues.return_value = issues
-        client.get_issue_events.return_value = []
+        client.get_issues_comments.return_value = []
         return client
 
     def test_fetch_error_writes_metric_sample(self):
@@ -251,6 +251,6 @@ class IssuesScanTests(TestCase):
         with patch("health.issues_scan.SourceCraftClient") as client_cls:
             client = client_cls.return_value
             client.get_issues.return_value = []
-            client.get_issue_events.return_value = []
+            client.get_issues_comments.return_value = []
             pk = run(scan.pk)
         self.assertEqual(pk, HealthScore.objects.get(pk=pk).pk)
