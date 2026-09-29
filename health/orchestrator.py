@@ -105,7 +105,7 @@ def _claim_pending_or_create_running(
     user_id: int | None,
     commit_sha: str,
 ) -> Scan:
-    """Берёт PENDING-заглушку с карточки или создаёт новый RUNNING Scan."""
+    """Забирает оставшийся PENDING или создаёт новый RUNNING Scan."""
 
     pending = (
         Scan.objects.filter(
@@ -545,11 +545,16 @@ def check_and_scan_repository(
 
 
 def fix_stale_scans() -> None:
+    from health.access_check import release_stale_access_checks
+
     reaped = _mark_stale_scans_as_failed(
         Scan.objects.filter(status__in=Scan.ACTIVE_STATUSES)
     )
     if reaped:
         logger.warning(f"Переведено в FAILED зависших Scan: {reaped} шт.")
+    released = release_stale_access_checks(timezone.now() - SCAN_STALE_AFTER)
+    if released:
+        logger.warning(f"Снято зависших проверок доступа: {released} шт.")
     reap_orphan_clone_dirs()
 
 

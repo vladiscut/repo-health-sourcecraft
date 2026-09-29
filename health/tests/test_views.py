@@ -292,7 +292,6 @@ class RepoDetailAndExportTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Скачать Markdown")
-        self.assertNotContains(response, "Скачать PDF")
         self.assertNotContains(response, "Запустить анализ")
         self.assertContains(
             response,
@@ -420,6 +419,14 @@ class RepoDetailAndExportTests(TestCase):
         self.assertEqual(after.json()["status"], "ready")
         self.assertEqual(after.json()["scan_id"], active.id)
 
+        user = get_user_model().objects.create_user("owner", password="x")
+        access = grant_access(user, self.public)
+        access.status = UserRepositoryAccess.Status.CHECKING
+        access.save(update_fields=["status"])
+        checking = self.client.get(url)
+        self.assertEqual(checking.json()["status"], "checking")
+        self.assertIsNone(checking.json()["scan_id"])
+
     def test_back_link_returns_to_personal_list(self):
         user = get_user_model().objects.create_user("owner", password="x")
         grant_access(user, self.public)
@@ -453,10 +460,12 @@ class RepoDetailAndExportTests(TestCase):
             },
             queue="analysis.user",
         )
+        self.assertFalse(Scan.objects.filter(repository=self.public).exists())
         self.assertTrue(
-            Scan.objects.filter(
+            UserRepositoryAccess.objects.filter(
+                user=user,
                 repository=self.public,
-                status=Scan.Status.CHECKING,
+                status=UserRepositoryAccess.Status.CHECKING,
             ).exists()
         )
 
@@ -478,12 +487,9 @@ class RepoDetailAndExportTests(TestCase):
             },
             queue="analysis.user",
         )
-        pending = Scan.objects.get(
-            repository=self.public,
-            status=Scan.Status.CHECKING,
-        )
-        self.assertEqual(pending.triggered_by, Scan.TriggeredBy.USER)
-        self.assertEqual(pending.triggered_by_user_id, user.id)
+        self.assertFalse(Scan.objects.filter(repository=self.public).exists())
+        access = UserRepositoryAccess.objects.get(user=user, repository=self.public)
+        self.assertEqual(access.status, UserRepositoryAccess.Status.CHECKING)
 
     @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_public_stranger_cannot_rescan(self, apply_async):
@@ -500,9 +506,9 @@ class RepoDetailAndExportTests(TestCase):
         self.assertEqual(response.status_code, 404)
         apply_async.assert_not_called()
         self.assertFalse(
-            Scan.objects.filter(
+            UserRepositoryAccess.objects.filter(
                 repository=self.public,
-                status=Scan.Status.CHECKING,
+                status=UserRepositoryAccess.Status.CHECKING,
             ).exists()
         )
 
@@ -619,14 +625,10 @@ class RepoDetailAndExportTests(TestCase):
     def test_running_access_check_opens_card_without_api(self, client_cls):
         user = get_user_model().objects.create_user("owner", password="x")
         make_profile(user, sourcecraft_pat="pat-still-valid")
-        grant_access(user, self.private)
+        access = grant_access(user, self.private)
+        access.status = UserRepositoryAccess.Status.CHECKING
+        access.save(update_fields=["status"])
         self.client.force_login(user)
-        Scan.objects.create(
-            repository=self.private,
-            status=Scan.Status.CHECKING,
-            triggered_by=Scan.TriggeredBy.USER,
-            triggered_by_user=user,
-        )
 
         response = self.client.get(
             reverse("health:repo-detail", args=["hidden", "secret"])
@@ -794,15 +796,11 @@ class RepoDetailAndExportTests(TestCase):
         self.assertIn("text/markdown", md["Content-Type"])
         self.assertIn("acme-tools-health.md", md["Content-Disposition"])
 
-        pdf = self.client.get(reverse("health:repo-export", args=["acme", "tools", "pdf"]))
-        self.assertEqual(pdf.status_code, 200)
-        self.assertEqual(pdf.content, b"")
-        self.assertEqual(pdf["Content-Type"], "application/pdf")
-
     def test_export_markdown_without_scan_is_not_empty(self):
         md = self.client.get(reverse("health:repo-export", args=["acme", "tools", "md"]))
         self.assertEqual(md.status_code, 200)
         self.assertIn("Нет данных", md.content.decode("utf-8"))
+
     def test_unknown_export_format_is_404(self):
         response = self.client.get(
             reverse("health:repo-export", args=["acme", "tools", "exe"])

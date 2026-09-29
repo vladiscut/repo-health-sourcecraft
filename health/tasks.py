@@ -195,12 +195,7 @@ def task_reap_orphan_clone_dirs() -> int:
 
 
 def _fail_unclaimed_pending(repository_id: int, exc: BaseException) -> None:
-    """Снимает PENDING-заглушку, если запуск скана упал до цепочки задач.
-
-    Карточка создаёт Scan со статусом pending сразу по кнопке. Если
-    воркер падает на импорте или до claim, строка иначе висит до таймаута
-    и страница крутит «Идёт анализ».
-    """
+    """Закрывает PENDING, если запуск упал до того, как оркестратор забрал скан."""
 
     from django.utils import timezone
 
@@ -242,14 +237,14 @@ def task_confirm_access_and_scan(
 
     from health.access_check import (
         SOURCECRAFT_SILENT_TEXT,
-        fail_personal_scan,
+        release_access_check,
         run_personal_access_check,
     )
 
     try:
         outcome = run_personal_access_check(repository_id, user_id)
     except Exception as exc:
-        fail_personal_scan(
+        release_access_check(
             repository_id,
             user_id,
             f"Запуск анализа не удался: {exc}",
@@ -259,7 +254,7 @@ def task_confirm_access_and_scan(
     if outcome != "unavailable":
         return
     if self.request.retries >= self.max_retries:
-        fail_personal_scan(repository_id, user_id, SOURCECRAFT_SILENT_TEXT)
+        release_access_check(repository_id, user_id, SOURCECRAFT_SILENT_TEXT)
         return
     raise self.retry()
 

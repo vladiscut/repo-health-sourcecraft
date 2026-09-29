@@ -68,6 +68,10 @@ class Profile(models.Model):
 class UserRepositoryAccess(models.Model):
     """Репозитории SourceCraft, доступные пользователю."""
 
+    class Status(models.TextChoices):
+        GRANTED = "granted", "доступ есть"
+        CHECKING = "checking", "проверяем доступ"
+
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -78,11 +82,34 @@ class UserRepositoryAccess(models.Model):
         on_delete=models.CASCADE,
         related_name="user_access",
     )
+    status = models.CharField(
+        "статус",
+        max_length=16,
+        choices=Status.choices,
+        default=Status.GRANTED,
+    )
+    checking_since = models.DateTimeField(
+        "проверка доступа с",
+        null=True,
+        blank=True,
+    )
+    check_error = models.TextField(
+        "ошибка проверки доступа",
+        blank=True,
+        default="",
+    )
 
     class Meta:
         verbose_name = "доступ к репозиторию"
         verbose_name_plural = "доступ к репозиториям"
         unique_together = ("user", "repository")
+        constraints = [
+            models.UniqueConstraint(
+                fields=["repository"],
+                condition=models.Q(status="checking"),
+                name="one_access_check_per_repo",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.user} -> {self.repository}"
@@ -243,7 +270,6 @@ class Scan(models.Model):
     """Один запуск анализа репозитория — неизменяемый снимок результата."""
 
     class Status(models.TextChoices):
-        CHECKING = "checking", "проверяем доступ"
         PENDING = "pending", "в очереди"
         RUNNING = "running", "идёт"
         SUCCESS = "success", "готово"
@@ -251,7 +277,6 @@ class Scan(models.Model):
         PARTIAL = "partial", "частично (часть данных недоступна)"
 
     ACTIVE_STATUSES = (
-        Status.CHECKING,
         Status.PENDING,
         Status.RUNNING,
     )
@@ -318,7 +343,7 @@ class Scan(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["repository"],
-                condition=models.Q(status__in=["checking", "pending", "running"]),
+                condition=models.Q(status__in=["pending", "running"]),
                 name="one_active_scan_per_repo",
             )
         ]

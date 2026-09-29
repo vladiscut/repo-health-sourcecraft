@@ -23,6 +23,8 @@ from health.formatters import humanize_number
 from health.models import Finding, MetricSample, Repository, Scan
 from health.personal_scan import (
     PHASE_TEXT,
+    access_check_in_progress,
+    access_check_notice,
     enqueue_personal_scan,
     user_has_saved_access,
 )
@@ -238,10 +240,9 @@ def can_view_repository(request: HttpRequest, repo: Repository) -> bool:
         return True
     if not request.user.is_authenticated:
         return False
-    # Проверка уже в очереди: карточку показывает лоадер, SourceCraft спрашивает воркер.
-    if (
-        user_has_saved_access(request.user, repo)
-        and _active_scan(repo) is not None
+    # Проверка доступа или скан уже идут: карточку показывает лоадер.
+    if user_has_saved_access(request.user, repo) and (
+        _active_scan(repo) is not None or access_check_in_progress(repo)
     ):
         return True
     decision = repository_access_for_page(request.user, repo)
@@ -389,11 +390,15 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
         context = super().get_context_data(**kwargs)
         repo = self.object
         active = _active_scan(repo)
-        scan_in_progress = active is not None
+        checking = active is None and access_check_in_progress(repo)
+        scan_in_progress = active is not None or checking
         scan = None
         scan_notice = ""
         if not scan_in_progress:
             scan, scan_notice = scan_for_card(repo)
+            extra = access_check_notice(self.request.user, repo)
+            if extra:
+                scan_notice = f"{scan_notice} {extra}".strip()
         presented = None if scan_in_progress else _present(scan)
         history = []
         for item in (
@@ -458,7 +463,10 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                 "analyzed_at": scan.finished_at if scan else None,
                 "history": history,
                 "can_analyze": can_analyze,
-                "scan_phase_text": PHASE_TEXT.get(active.status, "") if active else "",
+                "scan_phase_text": PHASE_TEXT.get(
+                    "checking" if checking else (active.status if active else ""),
+                    "",
+                ),
                 "phase_texts": PHASE_TEXT,
                 "scan_notice": scan_notice,
                 "from_me": from_me,
@@ -522,6 +530,8 @@ class RepoScanStatusView(RepositoryAccessMixin, View):
                     "scan_id": active.id,
                 }
             )
+        if access_check_in_progress(repo):
+            return JsonResponse({"status": "checking", "scan_id": None})
 
         latest = (
             repo.scans.filter(
@@ -546,10 +556,10 @@ class RepoExportView(RepositoryAccessMixin, View):
 
     def get(self, request, org_slug, repo_slug, fmt):
         repo = self.get_repository()
-        if fmt not in {"md", "pdf"}:
+        if fmt != "md":
             raise Http404("Неизвестный формат")
 
-        if _active_scan(repo) is not None:
+        if _active_scan(repo) is not None or access_check_in_progress(repo):
             messages.info(
                 request,
                 "Выгрузка недоступна, пока идёт анализ. Дождитесь завершения.",
@@ -557,11 +567,6 @@ class RepoExportView(RepositoryAccessMixin, View):
             return _repo_detail_redirect(request, org_slug, repo_slug)
 
         filename = _safe_filename(org_slug, repo_slug)
-        if fmt == "pdf":
-            response = HttpResponse(b"", content_type="application/pdf")
-            response["Content-Disposition"] = f'attachment; filename="{filename}.pdf"'
-            return response
-
         body = build_markdown_report(repo)
         response = HttpResponse(
             body.encode("utf-8"),

@@ -7,9 +7,10 @@
 import logging
 
 import requests
+from django.db.models import Q
 from requests.adapters import HTTPAdapter
 
-from health.models import Profile, Repository, Scan, UserRepositoryAccess
+from health.models import Profile, Repository, UserRepositoryAccess
 from integrations.sourcecraft import SourceCraftClient, SourceCraftError
 
 
@@ -116,24 +117,36 @@ def confirm_repository_access(user, repo: Repository) -> None:
         raise AccessUnavailable(SOURCECRAFT_SILENT_TEXT)
 
 
-def fail_personal_scan(repository_id: int, user_id: int, message: str) -> None:
-    """Закрывает скан, который ещё не перешёл в выполнение."""
+def release_access_check(repository_id: int, user_id: int, message: str = "") -> None:
+    """Снимает проверку доступа. Scan при этом не создаётся и не меняется."""
 
-    from django.utils import timezone
-
-    Scan.objects.filter(
+    UserRepositoryAccess.objects.filter(
         repository_id=repository_id,
-        triggered_by_user_id=user_id,
-        status__in=[Scan.Status.CHECKING, Scan.Status.PENDING],
+        user_id=user_id,
+        status=UserRepositoryAccess.Status.CHECKING,
     ).update(
-        status=Scan.Status.FAILED,
-        finished_at=timezone.now(),
-        error=message,
+        status=UserRepositoryAccess.Status.GRANTED,
+        checking_since=None,
+        check_error=message,
+    )
+
+
+def release_stale_access_checks(threshold) -> int:
+    """Снимает проверки доступа, которые висят дольше порога."""
+
+    return UserRepositoryAccess.objects.filter(
+        status=UserRepositoryAccess.Status.CHECKING,
+    ).filter(
+        Q(checking_since__lt=threshold) | Q(checking_since__isnull=True)
+    ).update(
+        status=UserRepositoryAccess.Status.GRANTED,
+        checking_since=None,
+        check_error="Проверка доступа зависла и была снята.",
     )
 
 
 def run_personal_access_check(repository_id: int, user_id: int) -> str:
-    """Проверяет доступ и при успехе переводит скан из checking в pending.
+    """Проверяет доступ и при успехе запускает скан в оркестраторе.
 
     Возвращает ok, denied, unavailable или gone.
     """
@@ -142,37 +155,38 @@ def run_personal_access_check(repository_id: int, user_id: int) -> str:
 
     from health.orchestrator import check_and_scan_repository
 
-    scan = (
-        Scan.objects.filter(
+    access = (
+        UserRepositoryAccess.objects.filter(
             repository_id=repository_id,
-            status=Scan.Status.CHECKING,
-            triggered_by_user_id=user_id,
+            user_id=user_id,
+            status=UserRepositoryAccess.Status.CHECKING,
         )
         .select_related("repository")
         .first()
     )
-    if scan is None:
+    if access is None:
         return "gone"
 
     user = get_user_model().objects.filter(pk=user_id).first()
     if user is None:
-        fail_personal_scan(repository_id, user_id, ACCESS_DENIED_TEXT)
+        release_access_check(repository_id, user_id, ACCESS_DENIED_TEXT)
         return "denied"
 
     try:
-        confirm_repository_access(user, scan.repository)
+        confirm_repository_access(user, access.repository)
     except AccessDenied as exc:
-        fail_personal_scan(repository_id, user_id, str(exc))
+        release_access_check(repository_id, user_id, str(exc))
         return "denied"
     except AccessUnavailable:
         return "unavailable"
 
-    promoted = Scan.objects.filter(
-        pk=scan.pk,
-        status=Scan.Status.CHECKING,
-    ).update(status=Scan.Status.PENDING)
-    if not promoted:
+    still_checking = UserRepositoryAccess.objects.filter(
+        pk=access.pk,
+        status=UserRepositoryAccess.Status.CHECKING,
+    ).exists()
+    if not still_checking:
         return "gone"
 
     check_and_scan_repository(repository_id, force=True, user_id=user_id)
+    release_access_check(repository_id, user_id)
     return "ok"
