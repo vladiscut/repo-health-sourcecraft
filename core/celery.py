@@ -21,30 +21,17 @@ USER_QUEUE_NAME = "analysis.user"
 SCHEDULE_QUEUE_NAME = "analysis.scheduled"
 
 app.conf.task_routes = {
-    # получение всех публичных репозиторией
     "health.tasks.task_update_all_public_repos": {"queue": SCHEDULE_QUEUE_NAME},
-    # сканирование для каждого публичного репозитория
     "health.tasks.task_scan_all_public_repositories": {"queue": SCHEDULE_QUEUE_NAME},
-    # скан категории ISSUES
     "health.tasks.task_issues_scan": {"queue": SCHEDULE_QUEUE_NAME},
-    # скан категории ISSUES
     "health.tasks.task_docs_scan": {"queue": SCHEDULE_QUEUE_NAME},
-    # скан категории DOCS
     "health.tasks.task_cicd_scan": {"queue": SCHEDULE_QUEUE_NAME},
-    # скан категории SECURITY
     "health.tasks.task_security_scan": {"queue": SCHEDULE_QUEUE_NAME},
-    # скан категории ACTIVITY
     "health.tasks.task_activity_scan": {"queue": SCHEDULE_QUEUE_NAME},
-    # скан категории CODE_HEALTH
     "health.tasks.task_code_health_scan": {"queue": SCHEDULE_QUEUE_NAME},
-    # cчитает score по всем категориям
     "health.tasks.task_aggregate_scan": {"queue": SCHEDULE_QUEUE_NAME},
-    # снимает зависшие сканы
     "health.tasks.task_reap_stale_scans": {"queue": SCHEDULE_QUEUE_NAME},
-    # удаляет каталоги клонов без Scan в БД
     "health.tasks.task_reap_orphan_clone_dirs": {"queue": SCHEDULE_QUEUE_NAME},
-    # проверка и запуск скана
     "health.tasks.task_check_and_scan_repository": {"queue": SCHEDULE_QUEUE_NAME},
-    # личный скан: сначала доступ, затем сам анализ
     "health.tasks.task_confirm_access_and_scan": {"queue": USER_QUEUE_NAME},
 }

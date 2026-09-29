@@ -1,5 +1,3 @@
-"""Вход через Я ID и личный кабинет /me/."""
-
 from django.contrib import messages
 from django.contrib.auth import login, logout
 from django.contrib.auth.mixins import LoginRequiredMixin
@@ -132,7 +130,7 @@ class MyReposView(LoginRequiredMixin, TemplateView):
                     "repository__scans",
                     queryset=(
                         Scan.objects
-                        .filter(status__in=[Scan.Status.SUCCESS, Scan.Status.PARTIAL])
+                        .filter(status=Scan.Status.SUCCESS)
                         .prefetch_related("scores")
                         .order_by("-created_at")
                     ),

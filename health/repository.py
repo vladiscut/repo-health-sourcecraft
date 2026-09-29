@@ -59,8 +59,6 @@ def _language_name(value: object) -> str | None:
 
 
 def prepare_repository_data(payload: dict) -> dict | None:
-    """Подготавливает данные для одного объекта JSON"""
-
     try:
         organization = payload.get("organization", {})
         if not isinstance(organization, dict):
@@ -107,8 +105,6 @@ def prepare_repository_data(payload: dict) -> dict | None:
 
 
 def prepare_repositories_data(payload: list) -> list:
-    """Подготавливает данные из списка JSON объектов из ответа SourceCraft API"""
-
     return list(
         filter(
             None,
@@ -118,8 +114,6 @@ def prepare_repositories_data(payload: list) -> list:
 
 
 def _flush_repositories(buffer: list[Repository]) -> None:
-    """Сбрасывает накопленные объекты в БД и очищает буфер"""
-
     if not buffer:
         return
 
@@ -178,9 +172,7 @@ def update_all_public_repositories(
 
     client = SourceCraftClient()
     buffer: list[Repository] = []
-    # Сколько страниц API накапливать перед сбросом в БД
-    pages_per_batch = 10  # т.е. pages_per_batch * 100 репозиториев за раз
-    # Сколько страниц в пачке
+    pages_per_batch = 10
     pages_in_batch = 0
 
     try:

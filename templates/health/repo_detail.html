@@ -35,6 +35,11 @@
         <span class="loader visible" aria-hidden="true"></span>
         <div class="muted" data-scan-phase-text>{{ scan_phase_text }}</div>
     </div>
+    {% elif is_preliminary %}
+    <div class="hero-score">
+        <div class="muted">{{ insufficient_score_title }}</div>
+        <p class="muted score-hint">{{ insufficient_score_detail }}</p>
+    </div>
     {% elif score and score.total is not None %}
     <div class="hero-score">
         <div class="score big {{ score.level }}">{{ score.total }}</div>
@@ -111,6 +116,9 @@
     </ul>
     {% if has_null_categories and score.total is not None %}
     <p class="muted">Категории без данных не обнуляют итог: их вес перераспределяется между категориями, где балл есть.</p>
+    {% endif %}
+    {% if is_preliminary %}
+    <p class="muted">{{ insufficient_score_detail }}</p>
     {% endif %}
 </section>
 

@@ -12,7 +12,8 @@ class ProfileAdmin(admin.ModelAdmin):
 
 @admin.register(UserRepositoryAccess)
 class UserRepositoryAccessAdmin(admin.ModelAdmin):
-    list_display = ("user", "repository")
+    list_display = ("user", "repository", "status")
+    list_filter = ("status",)
     search_fields = ("user__username", "repository__org_slug", "repository__repo_slug")
 
 

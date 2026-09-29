@@ -3,10 +3,14 @@
 {% if repo.url %}- Репозиторий: {{ repo.url }}
 {% endif %}- Язык: {{ repo.language|default:"не указан" }}
 - Дата анализа: {% if analyzed_at %}{{ analyzed_at|date:"d.m.Y H:i" }}{% else %}нет завершённого скана{% endif %}
-
+{% if scan_notice %}- {{ scan_notice }}
+{% endif %}
 ## Итоговый Score
 
-{% if overall is not None %}**{{ overall }}/100**{% else %}**Нет данных** — ни по одной категории нет рассчитанного балла.{% endif %}
+{% if is_preliminary %}**{{ insufficient_score_title }}**
+
+{{ insufficient_score_detail }}
+{% elif overall is not None %}**{{ overall }}/100**{% else %}**Нет данных** — ни по одной категории нет рассчитанного балла.{% endif %}
 
 ## Категории
 

@@ -1,4 +1,3 @@
-"""Запуск скана и сбор итогового балла."""
 import datetime
 import logging
 import shutil
@@ -13,7 +12,7 @@ from django.utils import timezone
 
 from core.celery import USER_QUEUE_NAME, SCHEDULE_QUEUE_NAME
 from health.models import Finding, HealthScore, MetricSample, Repository, Scan
-from health.scoring import CATEGORY_WEIGHTS, overall_finding_impacts
+from health.scoring import CATEGORY_WEIGHTS, is_preliminary_score, overall_finding_impacts
 from health.tasks import (
     task_issues_scan,
     task_docs_scan,
@@ -32,15 +31,13 @@ logger = logging.getLogger(__name__)
 
 ALL_CATEGORIES = list(CATEGORY_WEIGHTS.keys())
 
-PREVIEW_SCORE_WEIGHT_THRESHOLD = 0.5
-
 SCAN_STALE_AFTER = datetime.timedelta(
     minutes=settings.SCAN_STALE_TIMEOUT_MINUTES
 )
 
 
 class ActiveScanExistsError(Exception):
-    """По этому репозиторию уже есть незавершённый Scan."""
+    pass
 
 
 def _mark_stale_scans_as_failed(queryset) -> int:
@@ -107,8 +104,6 @@ def _claim_pending_or_create_running(
     user_id: int | None,
     commit_sha: str,
 ) -> Scan:
-    """Берёт PENDING-заглушку с карточки или создаёт новый RUNNING Scan."""
-
     pending = (
         Scan.objects.filter(
             repository=repository,
@@ -223,7 +218,6 @@ def _create_empty_repo_scan(
             value=None,
             is_available=False,
             error_reason=reason,
-            # Пустой репозиторий — подтверждающего артефакта нет.
             source_reference="",
         )
         for category in ALL_CATEGORIES
@@ -310,7 +304,6 @@ def start_repository_scan(
         current_hash or last_commit or "",
     )
 
-    # Публичные категории
     category_tasks = [
         task_docs_scan.si(scan.id).set(queue=queue),
         task_code_health_scan.si(scan.id).set(queue=queue),
@@ -318,7 +311,6 @@ def start_repository_scan(
         task_issues_scan.si(scan.id).set(queue=queue),
     ]
 
-    # Приватные категории
     if user_id:
         category_tasks.append(task_cicd_scan.si(scan.id).set(queue=queue))
         category_tasks.append(task_security_scan.si(scan.id).set(queue=queue))
@@ -337,7 +329,6 @@ def start_repository_scan(
     workflow_tasks = []
 
     if user_id:
-        # Если скан запустил пользователь, то сперва получаем клон репозитория
         workflow_tasks.append(task_git_clone.si(scan.id).set(queue=queue))
 
     workflow_tasks.extend([
@@ -414,7 +405,6 @@ def aggregate_scan(scan_id: int) -> dict:
         overall_score = round(overall_score)
         HealthScore.objects.bulk_update(scored.values(), ["weight_used"])
     else:
-        # Ни по одной категории нет данных — Score не считаем
         overall_score = None
 
     no_data_scores = [hs for c, hs in by_category.items() if c not in scored]
@@ -443,12 +433,18 @@ def aggregate_scan(scan_id: int) -> dict:
         else 0.0
     )
 
-    scored_weight = sum(CATEGORY_WEIGHTS[c] for c in scored)
-    is_preliminary = scored_weight < PREVIEW_SCORE_WEIGHT_THRESHOLD
+    category_totals = {
+        category: hs.total for category, hs in by_category.items()
+    }
+    is_preliminary = bool(
+        overall_score is not None and is_preliminary_score(category_totals)
+    )
 
     scan.finished_at = timezone.now()
     scan.raw = {
         **scan.raw,
+        # В raw оставляем вычисленное число для отладки; UI при preliminary
+        # его не показывает.
         "health_score": overall_score,
         "score_confidence": score_confidence,
         "is_preliminary": is_preliminary,
@@ -461,20 +457,27 @@ def aggregate_scan(scan_id: int) -> dict:
     }
     scan.save(update_fields=["status", "finished_at", "raw", "error"])
 
-    repo_update_fields = {
-        "health_score": overall_score,
-    }
+    # В рейтинг — только SUCCESS без preliminary. PARTIAL кэш не трогает.
+    published = (
+        overall_score
+        if scan.status == Scan.Status.SUCCESS and not is_preliminary
+        else None
+    )
+    repo_update_fields: dict = {}
+    if scan.status == Scan.Status.SUCCESS:
+        repo_update_fields["health_score"] = published
     if scan.commit_sha_at_analysis:
         repo_update_fields["last_scanned_at"] = scan.finished_at
         repo_update_fields["last_commit_sha_processed"] = scan.commit_sha_at_analysis
-    Repository.objects.filter(pk=scan.repository_id).update(
-        **repo_update_fields
-    )
+    if repo_update_fields:
+        Repository.objects.filter(pk=scan.repository_id).update(
+            **repo_update_fields
+        )
 
     return {
         "scan_id": scan.id,
         "status": scan.status,
-        "health_score": overall_score,
+        "health_score": published,
     }
 
 
@@ -518,8 +521,6 @@ def check_and_scan_repository(
     force: bool = False,
     user_id: int = None,
 ) -> dict:
-    """Проверка хеша + запуск скана при необходимости"""
-
     try:
         scan_id = start_repository_scan(
             repository_id,
@@ -534,17 +535,20 @@ def check_and_scan_repository(
 
 
 def fix_stale_scans() -> None:
+    from health.access_check import release_stale_access_checks
+
     reaped = _mark_stale_scans_as_failed(
         Scan.objects.filter(status__in=Scan.ACTIVE_STATUSES)
     )
     if reaped:
         logger.warning(f"Переведено в FAILED зависших Scan: {reaped} шт.")
+    released = release_stale_access_checks(timezone.now() - SCAN_STALE_AFTER)
+    if released:
+        logger.warning(f"Снято зависших проверок доступа: {released} шт.")
     reap_orphan_clone_dirs()
 
 
 def reap_orphan_clone_dirs() -> int:
-    """Удаляет каталоги клонов, которым больше не соответствует Scan"""
-
     clone_root = Path(settings.SCAN_REPO_DIR)
     if not clone_root.is_dir():
         return 0
@@ -557,7 +561,6 @@ def reap_orphan_clone_dirs() -> int:
 
         scan = Scan.objects.filter(pk=int(entry.name)).only("status").first()
         if scan is not None and scan.status not in terminal:
-            # Скан ещё жив — каталог клона нужен, не трогаем.
             continue
 
         try:

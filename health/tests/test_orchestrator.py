@@ -111,6 +111,66 @@ class EmptyRepositoryScanTests(TestCase):
         self.assertIsNone(repo.latest_completed_scan().raw["health_score"])
 
 
+class AggregatePreliminaryScoreTests(TestCase):
+    def test_thin_coverage_hides_repo_cache(self):
+        from health.models import HealthScore, MetricSample
+        from health.orchestrator import aggregate_scan
+        from health.scoring import CATEGORY_WEIGHTS
+
+        repo = make_repo(default_branch="main", is_empty=False)
+        scan = Scan.objects.create(
+            repository=repo,
+            status=Scan.Status.RUNNING,
+            triggered_by=Scan.TriggeredBy.SCHEDULE,
+            commit_sha_at_analysis="abc",
+        )
+        for category in CATEGORY_WEIGHTS:
+            total = 99 if category == MetricSample.Category.ACTIVITY else None
+            HealthScore.objects.create(
+                scan=scan,
+                category=category,
+                total=total,
+                weight_used=0.0,
+                data_completeness=1.0 if total is not None else 0.0,
+            )
+
+        result = aggregate_scan(scan.id)
+        scan.refresh_from_db()
+        repo.refresh_from_db()
+
+        self.assertEqual(scan.raw["health_score"], 99)
+        self.assertTrue(scan.raw["is_preliminary"])
+        self.assertIsNone(repo.health_score)
+        self.assertIsNone(result["health_score"])
+
+    def test_partial_does_not_overwrite_repo_score(self):
+        from health.models import HealthScore, MetricSample
+        from health.orchestrator import aggregate_scan
+
+        repo = make_repo(default_branch="main", is_empty=False, health_score=77)
+        scan = Scan.objects.create(
+            repository=repo,
+            status=Scan.Status.RUNNING,
+            triggered_by=Scan.TriggeredBy.SCHEDULE,
+            commit_sha_at_analysis="abc",
+        )
+        HealthScore.objects.create(
+            scan=scan,
+            category=MetricSample.Category.ACTIVITY,
+            total=50,
+            weight_used=0.0,
+            data_completeness=1.0,
+        )
+
+        result = aggregate_scan(scan.id)
+        scan.refresh_from_db()
+        repo.refresh_from_db()
+
+        self.assertEqual(scan.status, Scan.Status.PARTIAL)
+        self.assertEqual(repo.health_score, 77)
+        self.assertIsNone(result["health_score"])
+
+
 class TreeCacheTaskTests(SimpleTestCase):
 
     def test_clear_deletes_cache(self):

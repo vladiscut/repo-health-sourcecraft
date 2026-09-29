@@ -1,5 +1,3 @@
-"""Сигналы жизненного цикла сканов: очистка каталога клона."""
-
 import logging
 import shutil
 
@@ -38,8 +36,6 @@ def cleanup_scan_clone_dir(sender, instance: Scan, **kwargs) -> None:
 
 @receiver(post_delete, sender=Scan)
 def cleanup_repo_health_score(sender, instance: Scan, **kwargs) -> None:
-    """Обнуляет Repo Health Score если у репо все сканы были удалены"""
-
     repo = instance.repository
     if not repo.scans.exists():
         repo.health_score = None

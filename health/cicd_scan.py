@@ -1,5 +1,3 @@
-"""Категория CI/CD."""
-
 import logging
 import statistics
 from dataclasses import dataclass, field

@@ -1,5 +1,3 @@
-"""Категория документации."""
-
 import logging
 import re
 
@@ -399,7 +397,6 @@ def _compute_metrics(
 ) -> _DocsMetrics:
     metrics = _DocsMetrics()
 
-    # README
     readme_path = _find_root_file(tree, ("readme",))
     metrics.readme_present = readme_path is not None
     metrics.readme_path = readme_path
@@ -413,7 +410,6 @@ def _compute_metrics(
             metrics.readme_has_build_test = _matches_any(content, BUILD_TEST_PATTERNS)
             metrics.readme_has_structure = _matches_any(content, STRUCTURE_PATTERNS)
 
-    # LICENSE
     license_path = _find_root_file(tree, ("license", "copying", "licence"))
     metrics.license_present = license_path is not None
     metrics.license_path = license_path

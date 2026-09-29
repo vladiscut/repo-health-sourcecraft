@@ -106,22 +106,18 @@ CELERY_BROKER_POOL_LIMIT = 20
 CELERY_REDIS_MAX_CONNECTIONS = 20
 
 CELERY_BEAT_SCHEDULE = {
-    # Обновления данных о репо каждые 12 ч (00:00, 12:00)
     'task_update_all_public_repos': {
         'task': 'health.tasks.task_update_all_public_repos',
         'schedule': crontab(minute=0, hour='*/12'),
     },
-    # Сканирование метрик каждые 6 ч (00:30, 6:30, 12:30, 18:30)
     'scan_all_public_repositories': {
         'task': 'health.tasks.task_scan_all_public_repositories',
         'schedule': crontab(minute=30, hour='*/6'),
     },
-    # Снимает зависшие сканы каждые 20 м
     'reap_stale_scans': {
         'task': 'health.tasks.task_reap_stale_scans',
         'schedule': crontab(minute='*/20'),
     },
-    # Удаляет каталоги клонов без Scan в БД каждый 1 ч
     'reap_orphan_clone_dirs': {
         'task': 'health.tasks.task_reap_orphan_clone_dirs',
         'schedule': crontab(minute=0),
