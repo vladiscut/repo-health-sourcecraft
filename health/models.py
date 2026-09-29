@@ -243,11 +243,18 @@ class Scan(models.Model):
     """Один запуск анализа репозитория — неизменяемый снимок результата."""
 
     class Status(models.TextChoices):
+        CHECKING = "checking", "проверяем доступ"
         PENDING = "pending", "в очереди"
         RUNNING = "running", "идёт"
         SUCCESS = "success", "готово"
         FAILED = "failed", "ошибка"
         PARTIAL = "partial", "частично (часть данных недоступна)"
+
+    ACTIVE_STATUSES = (
+        Status.CHECKING,
+        Status.PENDING,
+        Status.RUNNING,
+    )
 
     class TriggeredBy(models.TextChoices):
         SCHEDULE = "schedule", "по расписанию"
@@ -311,7 +318,7 @@ class Scan(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=["repository"],
-                condition=models.Q(status__in=["pending", "running"]),
+                condition=models.Q(status__in=["checking", "pending", "running"]),
                 name="one_active_scan_per_repo",
             )
         ]

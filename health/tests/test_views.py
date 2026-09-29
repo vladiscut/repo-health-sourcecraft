@@ -147,12 +147,37 @@ class RepoListTests(TestCase):
         self.assertLess(html.index("sort/high"), html.index("sort/low"))
         self.assertLess(html.index("sort/low"), html.index("sort/ghost"))
         self.assertContains(response, "нет данных")
+        names = [
+            name
+            for item in response.context["items"]
+            if item["score"]
+            for name, _value in item["score"]["categories"]
+        ]
+        self.assertIn("Документация", names)
+        self.assertNotIn("CI/CD", names)
+        self.assertNotIn("Безопасность", names)
+        self.assertContains(response, "PAT владельца")
 
     def test_sort_by_rating(self):
         response = self.client.get(reverse("health:repo-list"), {"sort": "rating"})
         html = response.content.decode()
         self.assertLess(html.index("divkit/divkit"), html.index("acme/tools"))
         self.assertContains(response, "Сбросить")
+        self.assertContains(response, "PAT владельца")
+
+    def test_public_list_omits_owner_only_categories(self):
+        repo = make_repo(org_slug="shown", repo_slug="lib", rating_value=3)
+        _make_completed_scan(repo)
+        response = self.client.get(
+            reverse("health:repo-list"),
+            {"sort": "name", "q": "lib"},
+        )
+        item = response.context["items"][0]
+        names = [name for name, _value in item["score"]["categories"]]
+        self.assertIn("Документация", names)
+        self.assertNotIn("CI/CD", names)
+        self.assertNotIn("Безопасность", names)
+        self.assertNotContains(response, "Безопасность нет")
 
     def test_reset_link_goes_home(self):
         response = self.client.get(
@@ -245,9 +270,33 @@ class RepoDetailAndExportTests(TestCase):
         )
         self.assertFalse(response.context["scan_in_progress"])
         self.assertIsNotNone(response.context["score"])
-        self.assertContains(response, "Нет данных")
-        self.assertContains(response, "перераспределяется")
-        self.assertContains(response, "публичный запуск")
+        labels = [row["label"] for row in response.context["category_rows"]]
+        self.assertNotIn("CI/CD", labels)
+        self.assertNotIn("Безопасность", labels)
+        self.assertIn("Документация", labels)
+        self.assertContains(response, "PAT владельца")
+        self.assertNotContains(response, "публичный запуск")
+        self.assertNotContains(response, "перераспределяется")
+
+        stranger = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"]),
+            {"from": "me"},
+        )
+        stranger_labels = [row["label"] for row in stranger.context["category_rows"]]
+        self.assertNotIn("CI/CD", stranger_labels)
+
+        user = get_user_model().objects.create_user("owner", password="x")
+        grant_access(user, self.public)
+        self.client.force_login(user)
+        owned = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"]),
+            {"from": "me"},
+        )
+        owned_labels = [row["label"] for row in owned.context["category_rows"]]
+        self.assertIn("CI/CD", owned_labels)
+        self.assertIn("Безопасность", owned_labels)
+        self.assertContains(owned, "публичный запуск")
+        self.assertNotContains(owned, "PAT владельца")
 
     def test_detail_shows_no_data_when_scan_measured_nothing(self):
         scan = Scan.objects.create(
@@ -308,7 +357,7 @@ class RepoDetailAndExportTests(TestCase):
         )
         self.assertTrue(response.context["scan_in_progress"])
         self.assertIsNone(response.context["score"])
-        self.assertContains(response, "Идёт анализ")
+        self.assertContains(response, "Анализируем")
         self.assertContains(response, "data-scan-status-url")
         self.assertNotContains(response, "Скачать Markdown")
         self.assertNotContains(response, "Запустить анализ")
@@ -350,7 +399,7 @@ class RepoDetailAndExportTests(TestCase):
         self.assertContains(response, 'name="from" value="me"')
         self.assertContains(response, "Запустить анализ")
 
-    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_rescan_keeps_return_to_personal_list(self, apply_async):
         user = get_user_model().objects.create_user("owner", password="x")
         grant_access(user, self.public)
@@ -365,18 +414,17 @@ class RepoDetailAndExportTests(TestCase):
             kwargs={
                 "repository_id": self.public.id,
                 "user_id": user.id,
-                "force": True,
             },
             queue="analysis.user",
         )
         self.assertTrue(
             Scan.objects.filter(
                 repository=self.public,
-                status=Scan.Status.PENDING,
+                status=Scan.Status.CHECKING,
             ).exists()
         )
 
-    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_owner_rescan_uses_user_queue(self, apply_async):
         user = get_user_model().objects.create_user("owner", password="x")
         grant_access(user, self.public)
@@ -391,18 +439,17 @@ class RepoDetailAndExportTests(TestCase):
             kwargs={
                 "repository_id": self.public.id,
                 "user_id": user.id,
-                "force": True,
             },
             queue="analysis.user",
         )
         pending = Scan.objects.get(
             repository=self.public,
-            status=Scan.Status.PENDING,
+            status=Scan.Status.CHECKING,
         )
         self.assertEqual(pending.triggered_by, Scan.TriggeredBy.USER)
         self.assertEqual(pending.triggered_by_user_id, user.id)
 
-    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_public_stranger_cannot_rescan(self, apply_async):
         stranger = get_user_model().objects.create_user("stranger", password="x")
         self.client.force_login(stranger)
@@ -419,11 +466,11 @@ class RepoDetailAndExportTests(TestCase):
         self.assertFalse(
             Scan.objects.filter(
                 repository=self.public,
-                status=Scan.Status.PENDING,
+                status=Scan.Status.CHECKING,
             ).exists()
         )
 
-    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_rescan_hides_old_score_immediately(self, apply_async):
         user = get_user_model().objects.create_user("owner", password="x")
         grant_access(user, self.public)
@@ -435,8 +482,7 @@ class RepoDetailAndExportTests(TestCase):
         )
         self.assertTrue(response.context["scan_in_progress"])
         self.assertIsNone(response.context["score"])
-        self.assertContains(response, "Идёт анализ")
-        self.assertContains(response, "выгрузка недоступны")
+        self.assertContains(response, "Проверяем доступ к репозиторию")
         self.assertNotContains(response, "Запустить анализ")
         self.assertNotContains(response, "Скачать Markdown")
         apply_async.assert_called_once()
@@ -455,7 +501,7 @@ class RepoDetailAndExportTests(TestCase):
         self.assertRedirects(response, detail)
         self.assertContains(response, "Выгрузка недоступна")
 
-    @patch("health.views.task_check_and_scan_repository.apply_async")
+    @patch("health.personal_scan.task_confirm_access_and_scan.apply_async")
     def test_rescan_while_active_does_not_queue_again(self, apply_async):
         user = get_user_model().objects.create_user("owner", password="x")
         grant_access(user, self.public)
@@ -505,7 +551,7 @@ class RepoDetailAndExportTests(TestCase):
         apply_async.assert_not_called()
 
     @patch("health.views.task_check_and_scan_repository.apply_async")
-    @patch("health.user_repository.SourceCraftClient")
+    @patch("health.access_check.SourceCraftClient")
     def test_scan_query_on_private_with_access_queues_scan(
         self, client_cls, apply_async
     ):
@@ -533,7 +579,28 @@ class RepoDetailAndExportTests(TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
-    @patch("health.user_repository.SourceCraftClient")
+    @patch("health.access_check.SourceCraftClient")
+    def test_running_access_check_opens_card_without_api(self, client_cls):
+        user = get_user_model().objects.create_user("owner", password="x")
+        make_profile(user, sourcecraft_pat="pat-still-valid")
+        grant_access(user, self.private)
+        self.client.force_login(user)
+        Scan.objects.create(
+            repository=self.private,
+            status=Scan.Status.CHECKING,
+            triggered_by=Scan.TriggeredBy.USER,
+            triggered_by_user=user,
+        )
+
+        response = self.client.get(
+            reverse("health:repo-detail", args=["hidden", "secret"])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Проверяем доступ к репозиторию")
+        client_cls.assert_not_called()
+
+    @patch("health.access_check.SourceCraftClient")
     def test_owner_can_open_private_detail_when_api_confirms(self, client_cls):
         user = get_user_model().objects.create_user("owner", password="x")
         profile = make_profile(user, sourcecraft_pat="pat-still-valid")
@@ -546,10 +613,11 @@ class RepoDetailAndExportTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        client_cls.assert_called_once_with(token="pat-still-valid")
+        self.assertEqual(client_cls.call_args.kwargs["token"], "pat-still-valid")
+        self.assertEqual(client_cls.call_args.kwargs["timeout"], 5.0)
         client_cls.return_value.get_repository.assert_called_once_with("private-1")
 
-    @patch("health.user_repository.SourceCraftClient")
+    @patch("health.access_check.SourceCraftClient")
     def test_stale_access_row_is_not_enough_when_api_denies(self, client_cls):
         user = get_user_model().objects.create_user("former", password="x")
         make_profile(user, sourcecraft_pat="pat-revoked-rights")
@@ -561,10 +629,11 @@ class RepoDetailAndExportTests(TestCase):
         )
 
         response = self.client.get(
-            reverse("health:repo-detail", args=["hidden", "secret"])
+            reverse("health:repo-detail", args=["hidden", "secret"]),
+            follow=True,
         )
 
-        self.assertEqual(response.status_code, 404)
+        self.assertContains(response, "Нет доступа к репозиторию.")
         self.assertFalse(
             UserRepositoryAccess.objects.filter(
                 user=user,
@@ -572,7 +641,7 @@ class RepoDetailAndExportTests(TestCase):
             ).exists()
         )
 
-    @patch("health.user_repository.SourceCraftClient")
+    @patch("health.access_check.SourceCraftClient")
     def test_private_detail_without_token_does_not_call_api(self, client_cls):
         user = get_user_model().objects.create_user("notoken", password="x")
         make_profile(user)
@@ -592,7 +661,7 @@ class RepoDetailAndExportTests(TestCase):
             ).exists()
         )
 
-    @patch("health.user_repository.SourceCraftClient")
+    @patch("health.access_check.SourceCraftClient")
     def test_api_outage_hides_private_repo_but_keeps_access_row(self, client_cls):
         user = get_user_model().objects.create_user("owner", password="x")
         make_profile(user, sourcecraft_pat="pat-still-valid")
@@ -607,7 +676,8 @@ class RepoDetailAndExportTests(TestCase):
             reverse("health:repo-detail", args=["hidden", "secret"])
         )
 
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Не удалось проверить доступ")
         self.assertTrue(
             UserRepositoryAccess.objects.filter(
                 user=user,
@@ -629,7 +699,17 @@ class RepoDetailAndExportTests(TestCase):
             estimated_score_impact=0,
         )
 
-        page = self.client.get(reverse("health:repo-detail", args=["acme", "tools"]))
+        public = self.client.get(reverse("health:repo-detail", args=["acme", "tools"]))
+        self.assertNotContains(public, "Последний прогон CI")
+        self.assertNotContains(public, page_url)
+
+        user = get_user_model().objects.create_user("owner", password="x")
+        grant_access(user, self.public)
+        self.client.force_login(user)
+        page = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"]),
+            {"from": "me"},
+        )
         self.assertContains(page, f'href="{page_url}"')
         self.assertNotContains(page, 'href=".sourcecraft/ci.yaml"')
 

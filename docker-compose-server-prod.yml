@@ -151,6 +151,8 @@ services:
   celery-scheduled-repo-health-prod:
     container_name: celery-scheduled-repo-health-prod
     restart: always
+    # На стенде 2 vCPU. Квота в 1 ядро оставляет второе веб-приложению и Postgres.
+    cpus: "1"
     build:
       context: .
     env_file:

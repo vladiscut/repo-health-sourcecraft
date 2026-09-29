@@ -3,7 +3,6 @@
 from urllib.parse import urlencode
 
 from django.contrib import messages
-from django.db import IntegrityError
 from django.db.models import F, Prefetch, Q
 from django.http import Http404, HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -12,20 +11,37 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views import View
 from django.views.generic import DetailView, ListView
 
-from core.celery import USER_QUEUE_NAME, SCHEDULE_QUEUE_NAME
+from core.celery import SCHEDULE_QUEUE_NAME
+from health.access_check import (
+    ACCESS_DENIED_TEXT,
+    PAGE_UNAVAILABLE_TEXT,
+    PageAccessDenied,
+    PageAccessUnavailable,
+    repository_access_for_page,
+)
 from health.formatters import humanize_number
-from health.models import Finding, Repository, Scan, UserRepositoryAccess
+from health.models import Finding, MetricSample, Repository, Scan
+from health.personal_scan import (
+    PHASE_TEXT,
+    enqueue_personal_scan,
+    user_has_saved_access,
+)
 from health.repo_ordering import annotate_visible_score
 from health.reports import build_markdown_report, with_overall_impacts
 from health.score_breakdown import rows_for_scores
-from health.scoring import CATEGORY_LABELS, present_scores
+from health.scoring import CATEGORY_LABELS, present_scores, score_level
 from health.tasks import task_check_and_scan_repository
-from health.user_repository import user_can_access_repository
 
 
 PAGE_SIZE = 50
 STRONG_CATEGORY_THRESHOLD = 80
 WEAK_CATEGORY_THRESHOLD = 50
+# В публичной витрине эти категории не сканируются: API отвечает только по PAT владельца.
+_OWNER_ONLY_CATEGORIES = (
+    MetricSample.Category.CI_CD,
+    MetricSample.Category.SECURITY,
+)
+_OWNER_ONLY_LABELS = frozenset(CATEGORY_LABELS[key] for key in _OWNER_ONLY_CATEGORIES)
 
 
 SORTS = {
@@ -62,6 +78,10 @@ def _present(scan: Scan | None) -> dict | None:
     if scan is None:
         return None
     presented = present_scores(_full_totals(scan))
+    stored = (scan.raw or {}).get("health_score")
+    if isinstance(stored, int):
+        presented["total"] = stored
+        presented["level"] = score_level(stored)
     if presented["total"] is None and not _score_map(scan):
         return None
     return presented
@@ -69,26 +89,42 @@ def _present(scan: Scan | None) -> dict | None:
 
 def _active_scan(repo: Repository) -> Scan | None:
     return (
-        repo.scans.filter(
-            status__in=[Scan.Status.PENDING, Scan.Status.RUNNING],
-        )
+        repo.scans.filter(status__in=Scan.ACTIVE_STATUSES)
         .order_by("-created_at")
         .first()
     )
 
 
-def _user_can_run_personal_scan(user, repo: Repository) -> bool:
-    if not getattr(user, "is_authenticated", False):
-        return False
-    if repo.visibility == Repository.VisibilityType.PUBLIC:
-        return UserRepositoryAccess.objects.filter(
-            user=user,
-            repository=repo,
-        ).exists()
-    return True
+def _failure_notice(repo: Repository, shown: Scan | None) -> str:
+    failed = (
+        repo.scans.filter(status=Scan.Status.FAILED)
+        .order_by("-created_at")
+        .first()
+    )
+    if failed is None or not failed.error:
+        return ""
+    if shown is not None and failed.created_at < shown.created_at:
+        return ""
+    return failed.error
 
 
-def _strengths_and_weaknesses(scan: Scan | None, presented: dict | None):
+def _without_owner_only(presented: dict | None) -> dict | None:
+    if presented is None:
+        return None
+    categories = [
+        item
+        for item in presented["categories"]
+        if item[0] not in _OWNER_ONLY_LABELS
+    ]
+    return {**presented, "categories": categories}
+
+
+def _strengths_and_weaknesses(
+    scan: Scan | None,
+    presented: dict | None,
+    *,
+    exclude_categories: tuple[str, ...] = (),
+):
     strengths: list[str] = []
     weaknesses: list[str] = []
     if presented is None:
@@ -103,9 +139,12 @@ def _strengths_and_weaknesses(scan: Scan | None, presented: dict | None):
             weaknesses.append(f"{label}: {value}")
 
     if scan is not None:
-        for finding in scan.findings.filter(
+        findings = scan.findings.filter(
             severity__in=[Finding.Severity.HIGH, Finding.Severity.CRITICAL],
-        )[:5]:
+        )
+        if exclude_categories:
+            findings = findings.exclude(category__in=exclude_categories)
+        for finding in findings[:5]:
             weaknesses.append(finding.title)
 
     return strengths, weaknesses
@@ -191,10 +230,31 @@ def can_view_repository(request: HttpRequest, repo: Repository) -> bool:
         return True
     if not request.user.is_authenticated:
         return False
-    return user_can_access_repository(request.user, repo)
+    # Проверка уже в очереди: карточку показывает лоадер, SourceCraft спрашивает воркер.
+    if (
+        user_has_saved_access(request.user, repo)
+        and _active_scan(repo) is not None
+    ):
+        return True
+    decision = repository_access_for_page(request.user, repo)
+    if decision == "denied":
+        raise PageAccessDenied()
+    if decision == "unavailable" and not user_has_saved_access(request.user, repo):
+        raise PageAccessUnavailable()
+    return decision in {"ok", "unavailable"}
 
 
 class RepositoryAccessMixin:
+    def dispatch(self, request, *args, **kwargs):
+        try:
+            return super().dispatch(request, *args, **kwargs)
+        except PageAccessDenied:
+            messages.error(request, ACCESS_DENIED_TEXT)
+            return redirect("health:my-repos")
+        except PageAccessUnavailable:
+            messages.error(request, PAGE_UNAVAILABLE_TEXT)
+            return redirect("health:my-repos")
+
     def get_repository(self) -> Repository:
         repo = get_object_or_404(
             Repository,
@@ -263,7 +323,7 @@ class RepoListView(ListView):
                 {
                     "repo": repo,
                     "scan": scan,
-                    "score": _present(scan),
+                    "score": _without_owner_only(_present(scan)),
                 }
             )
         context.update(
@@ -324,7 +384,6 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
         scan_in_progress = active is not None
         scan = None if scan_in_progress else repo.latest_completed_scan()
         presented = None if scan_in_progress else _present(scan)
-        strengths, weaknesses = _strengths_and_weaknesses(scan, presented)
         history = []
         for item in (
             repo.scans
@@ -338,11 +397,33 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                     "total": item_presented["total"] if item_presented else None,
                 }
             )
-        can_analyze = _user_can_run_personal_scan(self.request.user, repo)
+        can_analyze = user_has_saved_access(self.request.user, repo)
         from_me = _opened_from_personal_list(self.request)
+        show_owner_categories = repo.visibility != Repository.VisibilityType.PUBLIC or (
+            from_me and can_analyze
+        )
+        rows = rows_for_scores(scan.scores.all()) if scan else []
+        findings = with_overall_impacts(scan) if scan else []
+        shown = presented
+        exclude_categories: tuple[str, ...] = ()
+        if not show_owner_categories:
+            rows = [
+                row for row in rows if row["label"] not in _OWNER_ONLY_LABELS
+            ]
+            findings = [
+                item
+                for item in findings
+                if item.category not in _OWNER_ONLY_CATEGORIES
+            ]
+            shown = _without_owner_only(presented)
+            exclude_categories = _OWNER_ONLY_CATEGORIES
+        strengths, weaknesses = _strengths_and_weaknesses(
+            scan,
+            shown,
+            exclude_categories=exclude_categories,
+        )
         has_null = bool(
-            presented
-            and any(value is None for _, value in presented["categories"])
+            shown and any(value is None for _, value in shown["categories"])
         )
         context.update(
             {
@@ -353,14 +434,18 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                     "health:repo-scan-status",
                     args=[repo.org_slug, repo.repo_slug],
                 ),
-                "findings": with_overall_impacts(scan) if scan else [],
+                "findings": findings,
                 "strengths": strengths,
                 "weaknesses": weaknesses,
                 "has_null_categories": has_null,
-                "category_rows": rows_for_scores(scan.scores.all()) if scan else [],
+                "category_rows": rows,
+                "show_owner_categories": show_owner_categories,
                 "analyzed_at": scan.finished_at if scan else None,
                 "history": history,
                 "can_analyze": can_analyze,
+                "scan_phase_text": PHASE_TEXT.get(active.status, "") if active else "",
+                "phase_texts": PHASE_TEXT,
+                "scan_notice": "" if scan_in_progress else _failure_notice(repo, scan),
                 "from_me": from_me,
                 "back_url": (
                     reverse("health:my-repos")
@@ -376,46 +461,41 @@ class RepoRescanView(RepositoryAccessMixin, View):
     http_method_names = ["post"]
 
     def post(self, request, org_slug, repo_slug):
-        repo = self.get_repository()
-
-        if not _user_can_run_personal_scan(request.user, repo):
-            raise Http404()
-
-        if _active_scan(repo) is not None:
-            messages.info(request, "Анализ этого репозитория уже идёт.")
-            return _repo_detail_redirect(request, org_slug, repo_slug)
-
-        user_id = request.user.id
-        queue = USER_QUEUE_NAME
-        triggered_by = Scan.TriggeredBy.USER
-
-        # PENDING сразу в БД: после редиректа карточка покажет loader,
-        # а не предыдущий успешный Score, пока Celery ещё не стартовал.
-        try:
-            Scan.objects.create(
-                repository=repo,
-                status=Scan.Status.PENDING,
-                triggered_by=triggered_by,
-                triggered_by_user_id=user_id,
-            )
-        except IntegrityError:
-            messages.info(request, "Анализ этого репозитория уже идёт.")
-            return _repo_detail_redirect(request, org_slug, repo_slug)
-
-        task_check_and_scan_repository.apply_async(
-            kwargs={
-                "repository_id": repo.id,
-                "user_id": user_id,
-                "force": True,
-            },
-            queue=queue,
+        repo = get_object_or_404(
+            Repository,
+            org_slug=org_slug,
+            repo_slug=repo_slug,
         )
-        messages.info(request, "Анализ поставлен в очередь.")
+        result = enqueue_personal_scan(request.user, repo)
+        if result == "forbidden":
+            raise Http404()
+        if result == "active":
+            messages.info(request, "Анализ этого репозитория уже идёт.")
         return _repo_detail_redirect(request, org_slug, repo_slug)
 
 
 class RepoScanStatusView(RepositoryAccessMixin, View):
     http_method_names = ["get"]
+
+    def get_repository(self) -> Repository:
+        """Статус читается из базы: опрос карточки не ждёт SourceCraft."""
+
+        repo = get_object_or_404(
+            Repository,
+            org_slug=self.kwargs["org_slug"],
+            repo_slug=self.kwargs["repo_slug"],
+        )
+        if repo.visibility == Repository.VisibilityType.PUBLIC:
+            return repo
+        user = self.request.user
+        if user_has_saved_access(user, repo):
+            return repo
+        if user.is_authenticated and repo.scans.filter(
+            triggered_by_user=user,
+            status__in=Scan.ACTIVE_STATUSES,
+        ).exists():
+            return repo
+        raise Http404()
 
     def get(self, request, org_slug, repo_slug):
         repo = self.get_repository()

@@ -9,7 +9,24 @@
     return;
   }
 
+  var phrases = {
+    checking: root.getAttribute("data-phrase-checking"),
+    pending: root.getAttribute("data-phrase-pending"),
+    running: root.getAttribute("data-phrase-running"),
+  };
   var intervalMs = 2000;
+
+  function show(status) {
+    var text = phrases[status];
+    if (!text) {
+      window.location.reload();
+      return;
+    }
+    var nodes = document.querySelectorAll("[data-scan-phase-text]");
+    for (var i = 0; i < nodes.length; i++) {
+      nodes[i].textContent = text;
+    }
+  }
 
   function poll() {
     fetch(url, {
@@ -23,11 +40,7 @@
         return response.json();
       })
       .then(function (data) {
-        var status = data && data.status;
-        if (status === "pending" || status === "running") {
-          return;
-        }
-        window.location.reload();
+        show(data && data.status);
       })
       .catch(function () {
         /* сеть временно недоступна — следующий тик */

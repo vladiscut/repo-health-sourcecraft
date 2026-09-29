@@ -67,21 +67,33 @@ def _categories_for_report(scan: Scan | None) -> list[dict]:
 def with_overall_impacts(scan: Scan) -> list:
     """Находки с estimated_score_impact в баллах общего Score.
 
-    После агрегации поле уже пересчитано, исходные баллы категории
-    лежат в scan.raw. У более ранних сканов в поле ещё баллы категории:
-    их нормируем здесь, не записывая обратно.
+    Исходные баллы категории лежат в scan.raw. Здесь они снова
+    переводятся в пункты итога, без записи в базу.
     """
 
     findings = list(scan.findings.all())
     raw = scan.raw or {}
-    if "finding_category_points" in raw:
-        return findings
+    saved = raw.get("finding_category_points")
+    if isinstance(saved, dict):
+        pairs = [
+            (
+                item.category,
+                int(saved.get(str(item.id), item.estimated_score_impact) or 0),
+            )
+            for item in findings
+        ]
+    else:
+        pairs = [
+            (item.category, item.estimated_score_impact) for item in findings
+        ]
 
     scores = {row.category: row for row in scan.scores.all()}
+    stored = raw.get("health_score")
     impacts = overall_finding_impacts(
-        [(item.category, item.estimated_score_impact) for item in findings],
+        pairs,
         {category: row.total for category, row in scores.items()},
         {category: row.weight_used or 0.0 for category, row in scores.items()},
+        overall_score=stored if isinstance(stored, int) else None,
     )
     for item, impact in zip(findings, impacts):
         item.estimated_score_impact = impact
@@ -110,6 +122,10 @@ def build_markdown_report(repository: Repository) -> str:
 
     categories = _categories_for_report(scan)
     overall = present_scores(totals)["total"]
+    if scan is not None:
+        stored = (scan.raw or {}).get("health_score")
+        if isinstance(stored, int):
+            overall = stored
     if overall is None and scan is not None:
         overall = overall_from_category_totals(totals)
 

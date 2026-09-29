@@ -6,7 +6,10 @@
 {% block content %}
 <p class="crumb"><a href="{{ back_url }}">← К списку</a></p>
 <div class="hero"
-     {% if scan_in_progress %}data-scan-status-url="{{ scan_status_url }}"{% endif %}>
+     {% if scan_in_progress %}data-scan-status-url="{{ scan_status_url }}"
+     data-phrase-checking="{{ phase_texts.checking }}"
+     data-phrase-pending="{{ phase_texts.pending }}"
+     data-phrase-running="{{ phase_texts.running }}"{% endif %}>
     <div>
         <h1>{{ repo.org_slug }}/{{ repo.repo_slug }}</h1>
         <p class="lead">{{ repo.description }}</p>
@@ -23,11 +26,14 @@
         {% if analyzed_at and not scan_in_progress %}
         <p class="muted">Дата анализа: {{ analyzed_at|date:"d.m.Y H:i" }}</p>
         {% endif %}
+        {% if scan_notice %}
+        <p class="muted">{{ scan_notice }}</p>
+        {% endif %}
     </div>
     {% if scan_in_progress %}
     <div class="hero-score">
         <span class="loader visible" aria-hidden="true"></span>
-        <div class="muted">Идёт анализ</div>
+        <div class="muted" data-scan-phase-text>{{ scan_phase_text }}</div>
     </div>
     {% elif score and score.total is not None %}
     <div class="hero-score">
@@ -56,7 +62,7 @@
         <span class="loader ms-1" aria-hidden="true"></span>
     </form>
     {% elif scan_in_progress %}
-    <span class="muted">Анализ уже идёт — запуск и выгрузка недоступны, пока скан в очереди или выполняется.</span>
+    <span class="muted" data-scan-phase-text>{{ scan_phase_text }}</span>
     {% endif %}
     {% if not scan_in_progress %}
     <a class="btn ghost" href="{% url 'health:repo-export' repo.org_slug repo.repo_slug 'md' %}">Скачать Markdown</a>
@@ -160,6 +166,10 @@
         {% endfor %}
     </ol>
 </section>
+{% endif %}
+
+{% if not show_owner_categories %}
+<p class="muted pat-note">Безопасность (AppSec) и CI/CD здесь не оцениваются: к ним есть доступ только по PAT владельца репозитория.</p>
 {% endif %}
 {% endblock %}
 {% block extra_js %}
