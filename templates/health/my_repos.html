@@ -65,6 +65,8 @@
             <td>
                 {% if item.score and item.score.total is not None %}
                 <span class="score {{ item.score.level }}">{{ item.score.total }}</span>
+                {% elif item.score and item.score.is_preliminary %}
+                <span class="muted" title="От API SourceCraft пришло слишком мало категорий">оценка недоступна</span>
                 {% else %}
                 <span class="muted">нет данных</span>
                 {% endif %}

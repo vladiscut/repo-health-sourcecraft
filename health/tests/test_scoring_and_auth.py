@@ -5,10 +5,12 @@ from health.models import MetricSample
 from health.scoring import (
     CATEGORY_WEIGHTS,
     DOCS_SUBMETRIC_WEIGHTS,
+    INSUFFICIENT_SCORE_TITLE,
     SUBMETRIC_WEIGHTS_BY_CATEGORY,
     _weighted_overall,
     compute_finding_impact,
     find_impact,
+    is_preliminary_score,
     overall_finding_impacts,
     overall_from_category_totals,
     present_scores,
@@ -46,6 +48,7 @@ class ScoringTests(SimpleTestCase):
         )
         self.assertEqual(presented["total"], 90)
         self.assertEqual(presented["level"], "ok")
+        self.assertFalse(presented["is_preliminary"])
         self.assertEqual(len(presented["categories"]), 6)
 
     def test_present_scores_keeps_missing_category(self):
@@ -54,8 +57,27 @@ class ScoringTests(SimpleTestCase):
         self.assertEqual(by_name["Документация"], 0)
         self.assertIsNone(by_name["Безопасность"])
         self.assertEqual(len(presented["categories"]), 6)
+        self.assertTrue(presented["is_preliminary"])
+        self.assertIsNone(presented["total"])
+        self.assertEqual(presented["computed_total"], 0)
         self.assertEqual(score_level(40), "low")
         self.assertEqual(score_level(None), "")
+
+    def test_preliminary_requires_partial_coverage(self):
+        self.assertTrue(
+            is_preliminary_score({MetricSample.Category.ACTIVITY: 99})
+        )
+        self.assertFalse(
+            is_preliminary_score(
+                {
+                    MetricSample.Category.DOCS: 80,
+                    MetricSample.Category.ACTIVITY: 70,
+                    MetricSample.Category.CODE_HEALTH: 60,
+                }
+            )
+        )
+        self.assertFalse(is_preliminary_score({}))
+        self.assertTrue(INSUFFICIENT_SCORE_TITLE)
 
 
 class FindImpactTests(SimpleTestCase):

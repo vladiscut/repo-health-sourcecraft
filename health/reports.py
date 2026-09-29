@@ -3,8 +3,12 @@
 from django.template.loader import render_to_string
 
 from health.models import HealthScore, MetricSample, Repository, Scan
+from health.scan_display import scan_for_card
 from health.scoring import (
     CATEGORY_LABELS,
+    INSUFFICIENT_SCORE_DETAIL,
+    INSUFFICIENT_SCORE_TITLE,
+    is_preliminary_score,
     overall_finding_impacts,
     overall_from_category_totals,
     present_scores,
@@ -104,9 +108,9 @@ def with_overall_impacts(scan: Scan) -> list:
 
 
 def build_markdown_report(repository: Repository) -> str:
-    """Markdown по последнему завершённому Scan репозитория."""
+    """Markdown по скану, который виден на карточке."""
 
-    scan = repository.latest_completed_scan()
+    scan, scan_notice = scan_for_card(repository)
     totals = {key: None for key in CATEGORY_LABELS}
     findings = []
     if scan is not None:
@@ -121,13 +125,25 @@ def build_markdown_report(repository: Repository) -> str:
         )
 
     categories = _categories_for_report(scan)
-    overall = present_scores(totals)["total"]
+    presented = present_scores(totals)
+    overall = presented["total"]
+    is_preliminary = presented["is_preliminary"]
     if scan is not None:
         stored = (scan.raw or {}).get("health_score")
-        if isinstance(stored, int):
+        raw_flag = (scan.raw or {}).get("is_preliminary")
+        if isinstance(raw_flag, bool):
+            is_preliminary = raw_flag and (
+                isinstance(stored, int) or presented.get("computed_total") is not None
+            )
+        if isinstance(stored, int) and not is_preliminary:
             overall = stored
-    if overall is None and scan is not None:
+        elif is_preliminary:
+            overall = None
+    if overall is None and scan is not None and not is_preliminary:
         overall = overall_from_category_totals(totals)
+        if overall is not None and is_preliminary_score(totals):
+            overall = None
+            is_preliminary = True
 
     return render_to_string(
         "health/report.md",
@@ -135,6 +151,10 @@ def build_markdown_report(repository: Repository) -> str:
             "repo": repository,
             "scan": scan,
             "overall": overall,
+            "is_preliminary": is_preliminary,
+            "insufficient_score_title": INSUFFICIENT_SCORE_TITLE,
+            "insufficient_score_detail": INSUFFICIENT_SCORE_DETAIL,
+            "scan_notice": scan_notice,
             "categories": categories,
             "findings": findings,
             "has_null": any(row["total"] is None for row in categories),

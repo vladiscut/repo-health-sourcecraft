@@ -132,7 +132,7 @@ class MyReposView(LoginRequiredMixin, TemplateView):
                     "repository__scans",
                     queryset=(
                         Scan.objects
-                        .filter(status__in=[Scan.Status.SUCCESS, Scan.Status.PARTIAL])
+                        .filter(status=Scan.Status.SUCCESS)
                         .prefetch_related("scores")
                         .order_by("-created_at")
                     ),

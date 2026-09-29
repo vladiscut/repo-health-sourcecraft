@@ -28,8 +28,15 @@ from health.personal_scan import (
 )
 from health.repo_ordering import annotate_visible_score
 from health.reports import build_markdown_report, with_overall_impacts
+from health.scan_display import scan_for_card
 from health.score_breakdown import rows_for_scores
-from health.scoring import CATEGORY_LABELS, present_scores, score_level
+from health.scoring import (
+    CATEGORY_LABELS,
+    INSUFFICIENT_SCORE_DETAIL,
+    INSUFFICIENT_SCORE_TITLE,
+    present_scores,
+    score_level,
+)
 from health.tasks import task_check_and_scan_repository
 
 
@@ -79,10 +86,24 @@ def _present(scan: Scan | None) -> dict | None:
         return None
     presented = present_scores(_full_totals(scan))
     stored = (scan.raw or {}).get("health_score")
+    raw_flag = (scan.raw or {}).get("is_preliminary")
+    if isinstance(raw_flag, bool):
+        presented["is_preliminary"] = raw_flag and (
+            isinstance(stored, int) or presented.get("computed_total") is not None
+        )
     if isinstance(stored, int):
-        presented["total"] = stored
-        presented["level"] = score_level(stored)
-    if presented["total"] is None and not _score_map(scan):
+        presented["computed_total"] = stored
+        if presented.get("is_preliminary"):
+            presented["total"] = None
+            presented["level"] = ""
+        else:
+            presented["total"] = stored
+            presented["level"] = score_level(stored)
+    if (
+        presented["total"] is None
+        and not presented.get("is_preliminary")
+        and not _score_map(scan)
+    ):
         return None
     return presented
 
@@ -93,19 +114,6 @@ def _active_scan(repo: Repository) -> Scan | None:
         .order_by("-created_at")
         .first()
     )
-
-
-def _failure_notice(repo: Repository, shown: Scan | None) -> str:
-    failed = (
-        repo.scans.filter(status=Scan.Status.FAILED)
-        .order_by("-created_at")
-        .first()
-    )
-    if failed is None or not failed.error:
-        return ""
-    if shown is not None and failed.created_at < shown.created_at:
-        return ""
-    return failed.error
 
 
 def _without_owner_only(presented: dict | None) -> dict | None:
@@ -296,7 +304,7 @@ class RepoListView(ListView):
                 "scans",
                 queryset=(
                     Scan.objects
-                    .filter(status__in=[Scan.Status.SUCCESS, Scan.Status.PARTIAL])
+                    .filter(status=Scan.Status.SUCCESS)
                     .prefetch_related("scores")
                     .order_by("-created_at")
                 ),
@@ -382,7 +390,10 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
         repo = self.object
         active = _active_scan(repo)
         scan_in_progress = active is not None
-        scan = None if scan_in_progress else repo.latest_completed_scan()
+        scan = None
+        scan_notice = ""
+        if not scan_in_progress:
+            scan, scan_notice = scan_for_card(repo)
         presented = None if scan_in_progress else _present(scan)
         history = []
         for item in (
@@ -425,10 +436,14 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
         has_null = bool(
             shown and any(value is None for _, value in shown["categories"])
         )
+        is_preliminary = bool(presented and presented.get("is_preliminary"))
         context.update(
             {
                 "scan": scan,
                 "score": presented,
+                "is_preliminary": is_preliminary,
+                "insufficient_score_title": INSUFFICIENT_SCORE_TITLE,
+                "insufficient_score_detail": INSUFFICIENT_SCORE_DETAIL,
                 "scan_in_progress": scan_in_progress,
                 "scan_status_url": reverse(
                     "health:repo-scan-status",
@@ -445,7 +460,7 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                 "can_analyze": can_analyze,
                 "scan_phase_text": PHASE_TEXT.get(active.status, "") if active else "",
                 "phase_texts": PHASE_TEXT,
-                "scan_notice": "" if scan_in_progress else _failure_notice(repo, scan),
+                "scan_notice": scan_notice,
                 "from_me": from_me,
                 "back_url": (
                     reverse("health:my-repos")

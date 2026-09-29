@@ -13,7 +13,7 @@ from django.utils import timezone
 
 from core.celery import USER_QUEUE_NAME, SCHEDULE_QUEUE_NAME
 from health.models import Finding, HealthScore, MetricSample, Repository, Scan
-from health.scoring import CATEGORY_WEIGHTS, overall_finding_impacts
+from health.scoring import CATEGORY_WEIGHTS, is_preliminary_score, overall_finding_impacts
 from health.tasks import (
     task_issues_scan,
     task_docs_scan,
@@ -31,8 +31,6 @@ from integrations.sourcecraft import SourceCraftClient, SourceCraftError
 logger = logging.getLogger(__name__)
 
 ALL_CATEGORIES = list(CATEGORY_WEIGHTS.keys())
-
-PREVIEW_SCORE_WEIGHT_THRESHOLD = 0.5
 
 SCAN_STALE_AFTER = datetime.timedelta(
     minutes=settings.SCAN_STALE_TIMEOUT_MINUTES
@@ -392,22 +390,19 @@ def _scale_finding_impacts(
 
 
 def aggregate_scan(scan_id: int) -> dict:
-    print('================')
     scan = Scan.objects.select_related("repository").get(pk=scan_id)
     health_scores = list(HealthScore.objects.filter(scan=scan))
     by_category = {hs.category: hs for hs in health_scores}
-    print(health_scores)
+
     missing_categories = [c for c in ALL_CATEGORIES if c not in by_category]
-    print(missing_categories)
+
     scored = {c: hs for c, hs in by_category.items() if hs.total is not None}
-    print(scored)
     effective_weights = {
         c: CATEGORY_WEIGHTS[c] * hs.data_completeness
         for c, hs in scored.items()
     }
-    print(effective_weights)
     weight_sum = sum(effective_weights.values())
-    print(weight_sum)
+
     if weight_sum > 0:
         overall_score = 0.0
         for category, hs in scored.items():
@@ -421,7 +416,6 @@ def aggregate_scan(scan_id: int) -> dict:
         overall_score = None
 
     no_data_scores = [hs for c, hs in by_category.items() if c not in scored]
-    print(no_data_scores)
     for hs in no_data_scores:
         hs.weight_used = 0.0
     if no_data_scores:
@@ -436,26 +430,29 @@ def aggregate_scan(scan_id: int) -> dict:
         scan.status = Scan.Status.SUCCESS
 
     total_category_weight = sum(CATEGORY_WEIGHTS[c] for c in ALL_CATEGORIES)
-    print(total_category_weight)
     confidence_numerator = sum(
         CATEGORY_WEIGHTS[c] * hs.data_completeness
         for c, hs in by_category.items()
         if c in CATEGORY_WEIGHTS
     )
-    print(confidence_numerator)
     score_confidence = (
         confidence_numerator / total_category_weight
         if total_category_weight > 0
         else 0.0
     )
-    print(score_confidence)
-    scored_weight = sum(CATEGORY_WEIGHTS[c] for c in scored)
-    is_preliminary = scored_weight < PREVIEW_SCORE_WEIGHT_THRESHOLD
-    print(scored_weight)
-    print(is_preliminary)
+
+    category_totals = {
+        category: hs.total for category, hs in by_category.items()
+    }
+    is_preliminary = bool(
+        overall_score is not None and is_preliminary_score(category_totals)
+    )
+
     scan.finished_at = timezone.now()
     scan.raw = {
         **scan.raw,
+        # В raw оставляем вычисленное число для отладки; UI при preliminary
+        # его не показывает.
         "health_score": overall_score,
         "score_confidence": score_confidence,
         "is_preliminary": is_preliminary,
@@ -468,20 +465,27 @@ def aggregate_scan(scan_id: int) -> dict:
     }
     scan.save(update_fields=["status", "finished_at", "raw", "error"])
 
-    repo_update_fields = {
-        "health_score": overall_score,
-    }
+    # В рейтинг — только SUCCESS без preliminary. PARTIAL кэш не трогает.
+    published = (
+        overall_score
+        if scan.status == Scan.Status.SUCCESS and not is_preliminary
+        else None
+    )
+    repo_update_fields: dict = {}
+    if scan.status == Scan.Status.SUCCESS:
+        repo_update_fields["health_score"] = published
     if scan.commit_sha_at_analysis:
         repo_update_fields["last_scanned_at"] = scan.finished_at
         repo_update_fields["last_commit_sha_processed"] = scan.commit_sha_at_analysis
-    Repository.objects.filter(pk=scan.repository_id).update(
-        **repo_update_fields
-    )
+    if repo_update_fields:
+        Repository.objects.filter(pk=scan.repository_id).update(
+            **repo_update_fields
+        )
 
     return {
         "scan_id": scan.id,
         "status": scan.status,
-        "health_score": overall_score,
+        "health_score": published,
     }
 
 

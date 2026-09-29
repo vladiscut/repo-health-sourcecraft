@@ -14,6 +14,30 @@ CATEGORY_WEIGHTS = {
     MetricSample.Category.ISSUES: 0.15,
 }
 
+# Покрытие ниже порога — общий Score на карточке и в рейтинге не показываем.
+PREVIEW_SCORE_WEIGHT_THRESHOLD = 0.5
+
+INSUFFICIENT_SCORE_TITLE = "Оценка недоступна"
+INSUFFICIENT_SCORE_DETAIL = (
+    "От API SourceCraft и связанных сервисов пришло слишком мало категорий "
+    "для честного итога. Это ограничение доступности данных на платформе, "
+    "а не сбой Repo Health."
+)
+
+
+def scored_category_weight(totals: dict[str, int | None]) -> float:
+    return sum(
+        weight
+        for category, weight in CATEGORY_WEIGHTS.items()
+        if totals.get(category) is not None
+    )
+
+
+def is_preliminary_score(totals: dict[str, int | None]) -> bool:
+    weight = scored_category_weight(totals)
+    return 0 < weight < PREVIEW_SCORE_WEIGHT_THRESHOLD
+
+
 CICD_SUBMETRIC_WEIGHTS = {
     "ci_config_present": 0.30,
     "success_rate": 0.55,
@@ -733,13 +757,17 @@ def score_level(total: int | None) -> str:
 
 def present_scores(totals: dict[str, int | None]) -> dict:
     total = overall_from_category_totals(totals)
+    preliminary = bool(total is not None and is_preliminary_score(totals))
     categories = [
         (label, totals.get(key))
         for key, label in CATEGORY_LABELS.items()
     ]
     return {
-        "total": total,
-        "level": score_level(total),
+        # На UI при малом покрытии числа нет — только пояснение про API.
+        "total": None if preliminary else total,
+        "level": "" if preliminary else score_level(total),
+        "is_preliminary": preliminary,
+        "computed_total": total,
         "categories": categories,
         "totals": totals,
     }
