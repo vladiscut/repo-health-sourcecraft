@@ -11,7 +11,7 @@ from django.views import View
 from django.views.generic import TemplateView
 
 from health.models import Profile, Repository, Scan, UserRepositoryAccess
-from health.personal_scan import ACCESS_CHECK_TEXT, enqueue_personal_scan
+from health.personal_scan import enqueue_personal_scan
 from health.user_repository import (
     sourcecraft_token_works,
     sync_user_repositories,
@@ -228,6 +228,4 @@ class AnalyzeMyRepoView(LoginRequiredMixin, View):
             raise Http404()
         if result == "active":
             messages.info(request, "Анализ этого репозитория уже идёт.")
-        else:
-            messages.info(request, ACCESS_CHECK_TEXT)
         return redirect(next_url)

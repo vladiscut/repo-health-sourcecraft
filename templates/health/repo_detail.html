@@ -167,6 +167,10 @@
     </ol>
 </section>
 {% endif %}
+
+{% if not show_owner_categories %}
+<p class="muted pat-note">Безопасность (AppSec) и CI/CD здесь не оцениваются: к ним есть доступ только по PAT владельца репозитория.</p>
+{% endif %}
 {% endblock %}
 {% block extra_js %}
 {% if scan_in_progress %}

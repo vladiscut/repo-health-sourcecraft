@@ -112,6 +112,16 @@ class FindImpactTests(SimpleTestCase):
         )
         self.assertEqual(impact, 8)
 
+    def test_tiny_deficit_does_not_round_away(self):
+        scores = {key: 100.0 for key in DOCS_SUBMETRIC_WEIGHTS}
+        scores["contributing_codeowners"] = 99.0
+        impact = find_impact(
+            "contributing_codeowners",
+            DOCS_SUBMETRIC_WEIGHTS,
+            scores,
+        )
+        self.assertEqual(impact, 1)
+
 
 class OverallFindingImpactTests(SimpleTestCase):
     """Баллы категории × вес категории = прирост общего Score."""
@@ -151,6 +161,25 @@ class OverallFindingImpactTests(SimpleTestCase):
             {"docs": 0.0},
         )
         self.assertEqual(impacts, [0])
+
+    def test_pluses_sum_to_the_gap_when_weights_sum_to_one(self):
+        totals = {"docs": 60, "activity": 65, "code_health": 100}
+        weights = {"docs": 0.30, "activity": 0.30, "code_health": 0.40}
+        impacts = overall_finding_impacts(
+            [("docs", 40), ("activity", 35)],
+            totals,
+            weights,
+        )
+        score = round(sum(totals[key] * weights[key] for key in totals))
+        self.assertEqual(sum(impacts), 100 - score)
+
+    def test_uncovered_deficit_is_not_assigned_to_other_findings(self):
+        impacts = overall_finding_impacts(
+            [("activity", 10)],
+            {"activity": 0},
+            {"activity": 1.0},
+        )
+        self.assertEqual(impacts, [10])
 
 
 class SubmetricWeightsMapTests(SimpleTestCase):

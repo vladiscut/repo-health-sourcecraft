@@ -350,7 +350,17 @@ def start_repository_scan(
     return scan.id
 
 
-def _scale_finding_impacts(scan: Scan, by_category: dict[str, HealthScore]) -> None:
+_MISSING_SCORE = object()
+
+
+def _scale_finding_impacts(
+    scan: Scan,
+    by_category: dict[str, HealthScore],
+    overall_score: int | None | object = _MISSING_SCORE,
+) -> None:
+    from health.score_gap import ensure_gap_findings
+
+    ensure_gap_findings(scan)
     findings = list(Finding.objects.filter(scan=scan))
     if not findings:
         return
@@ -368,7 +378,12 @@ def _scale_finding_impacts(scan: Scan, by_category: dict[str, HealthScore]) -> N
     weights = {
         category: score.weight_used for category, score in by_category.items()
     }
-    impacts = overall_finding_impacts(pairs, totals, weights)
+    if overall_score is _MISSING_SCORE:
+        stored = raw.get("health_score")
+        overall_score = stored if isinstance(stored, int) else None
+    impacts = overall_finding_impacts(
+        pairs, totals, weights, overall_score=overall_score
+    )
     for finding, impact in zip(findings, impacts):
         finding.estimated_score_impact = impact
     Finding.objects.bulk_update(findings, ["estimated_score_impact"])
@@ -408,7 +423,7 @@ def aggregate_scan(scan_id: int) -> dict:
     if no_data_scores:
         HealthScore.objects.bulk_update(no_data_scores, ["weight_used"])
 
-    _scale_finding_impacts(scan, by_category)
+    _scale_finding_impacts(scan, by_category, overall_score)
 
     if missing_categories:
         scan.status = Scan.Status.PARTIAL

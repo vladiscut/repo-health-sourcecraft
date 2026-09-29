@@ -20,9 +20,8 @@ from health.access_check import (
     repository_access_for_page,
 )
 from health.formatters import humanize_number
-from health.models import Finding, Repository, Scan
+from health.models import Finding, MetricSample, Repository, Scan
 from health.personal_scan import (
-    ACCESS_CHECK_TEXT,
     PHASE_TEXT,
     enqueue_personal_scan,
     user_has_saved_access,
@@ -30,13 +29,19 @@ from health.personal_scan import (
 from health.repo_ordering import annotate_visible_score
 from health.reports import build_markdown_report, with_overall_impacts
 from health.score_breakdown import rows_for_scores
-from health.scoring import CATEGORY_LABELS, present_scores
+from health.scoring import CATEGORY_LABELS, present_scores, score_level
 from health.tasks import task_check_and_scan_repository
 
 
 PAGE_SIZE = 50
 STRONG_CATEGORY_THRESHOLD = 80
 WEAK_CATEGORY_THRESHOLD = 50
+# В публичной витрине эти категории не сканируются: API отвечает только по PAT владельца.
+_OWNER_ONLY_CATEGORIES = (
+    MetricSample.Category.CI_CD,
+    MetricSample.Category.SECURITY,
+)
+_OWNER_ONLY_LABELS = frozenset(CATEGORY_LABELS[key] for key in _OWNER_ONLY_CATEGORIES)
 
 
 SORTS = {
@@ -73,6 +78,10 @@ def _present(scan: Scan | None) -> dict | None:
     if scan is None:
         return None
     presented = present_scores(_full_totals(scan))
+    stored = (scan.raw or {}).get("health_score")
+    if isinstance(stored, int):
+        presented["total"] = stored
+        presented["level"] = score_level(stored)
     if presented["total"] is None and not _score_map(scan):
         return None
     return presented
@@ -99,7 +108,23 @@ def _failure_notice(repo: Repository, shown: Scan | None) -> str:
     return failed.error
 
 
-def _strengths_and_weaknesses(scan: Scan | None, presented: dict | None):
+def _without_owner_only(presented: dict | None) -> dict | None:
+    if presented is None:
+        return None
+    categories = [
+        item
+        for item in presented["categories"]
+        if item[0] not in _OWNER_ONLY_LABELS
+    ]
+    return {**presented, "categories": categories}
+
+
+def _strengths_and_weaknesses(
+    scan: Scan | None,
+    presented: dict | None,
+    *,
+    exclude_categories: tuple[str, ...] = (),
+):
     strengths: list[str] = []
     weaknesses: list[str] = []
     if presented is None:
@@ -114,9 +139,12 @@ def _strengths_and_weaknesses(scan: Scan | None, presented: dict | None):
             weaknesses.append(f"{label}: {value}")
 
     if scan is not None:
-        for finding in scan.findings.filter(
+        findings = scan.findings.filter(
             severity__in=[Finding.Severity.HIGH, Finding.Severity.CRITICAL],
-        )[:5]:
+        )
+        if exclude_categories:
+            findings = findings.exclude(category__in=exclude_categories)
+        for finding in findings[:5]:
             weaknesses.append(finding.title)
 
     return strengths, weaknesses
@@ -209,11 +237,11 @@ def can_view_repository(request: HttpRequest, repo: Repository) -> bool:
     ):
         return True
     decision = repository_access_for_page(request.user, repo)
-    if decision == "unavailable":
-        raise PageAccessUnavailable()
     if decision == "denied":
         raise PageAccessDenied()
-    return decision == "ok"
+    if decision == "unavailable" and not user_has_saved_access(request.user, repo):
+        raise PageAccessUnavailable()
+    return decision in {"ok", "unavailable"}
 
 
 class RepositoryAccessMixin:
@@ -295,7 +323,7 @@ class RepoListView(ListView):
                 {
                     "repo": repo,
                     "scan": scan,
-                    "score": _present(scan),
+                    "score": _without_owner_only(_present(scan)),
                 }
             )
         context.update(
@@ -356,7 +384,6 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
         scan_in_progress = active is not None
         scan = None if scan_in_progress else repo.latest_completed_scan()
         presented = None if scan_in_progress else _present(scan)
-        strengths, weaknesses = _strengths_and_weaknesses(scan, presented)
         history = []
         for item in (
             repo.scans
@@ -372,9 +399,31 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
             )
         can_analyze = user_has_saved_access(self.request.user, repo)
         from_me = _opened_from_personal_list(self.request)
+        show_owner_categories = repo.visibility != Repository.VisibilityType.PUBLIC or (
+            from_me and can_analyze
+        )
+        rows = rows_for_scores(scan.scores.all()) if scan else []
+        findings = with_overall_impacts(scan) if scan else []
+        shown = presented
+        exclude_categories: tuple[str, ...] = ()
+        if not show_owner_categories:
+            rows = [
+                row for row in rows if row["label"] not in _OWNER_ONLY_LABELS
+            ]
+            findings = [
+                item
+                for item in findings
+                if item.category not in _OWNER_ONLY_CATEGORIES
+            ]
+            shown = _without_owner_only(presented)
+            exclude_categories = _OWNER_ONLY_CATEGORIES
+        strengths, weaknesses = _strengths_and_weaknesses(
+            scan,
+            shown,
+            exclude_categories=exclude_categories,
+        )
         has_null = bool(
-            presented
-            and any(value is None for _, value in presented["categories"])
+            shown and any(value is None for _, value in shown["categories"])
         )
         context.update(
             {
@@ -385,11 +434,12 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                     "health:repo-scan-status",
                     args=[repo.org_slug, repo.repo_slug],
                 ),
-                "findings": with_overall_impacts(scan) if scan else [],
+                "findings": findings,
                 "strengths": strengths,
                 "weaknesses": weaknesses,
                 "has_null_categories": has_null,
-                "category_rows": rows_for_scores(scan.scores.all()) if scan else [],
+                "category_rows": rows,
+                "show_owner_categories": show_owner_categories,
                 "analyzed_at": scan.finished_at if scan else None,
                 "history": history,
                 "can_analyze": can_analyze,
@@ -421,8 +471,6 @@ class RepoRescanView(RepositoryAccessMixin, View):
             raise Http404()
         if result == "active":
             messages.info(request, "Анализ этого репозитория уже идёт.")
-        else:
-            messages.info(request, ACCESS_CHECK_TEXT)
         return _repo_detail_redirect(request, org_slug, repo_slug)
 
 

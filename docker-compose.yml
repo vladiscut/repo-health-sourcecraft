@@ -135,6 +135,8 @@ services:
   celery-scheduled-repo-health:
     container_name: celery-scheduled-repo-health
     restart: always
+    # Старт общего обхода иначе держит все 16 логических CPU. Потолок — половина.
+    cpus: "8"
     build:
       context: .
     env_file:

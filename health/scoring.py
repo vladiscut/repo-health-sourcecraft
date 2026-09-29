@@ -1,5 +1,7 @@
 """Расчёт Repo Health Score."""
 
+import math
+
 from health.models import Finding, MetricSample
 
 
@@ -83,21 +85,48 @@ def find_impact(
         return 0
     weight = submetric_weights[submetric_key]
     score = submetric_scores[submetric_key]
-    return round((weight / available) * (100.0 - score))
+    deficit = (weight / available) * (100.0 - score)
+    if deficit <= 0:
+        return 0
+    rounded = round(deficit)
+    # Иначе недобор меньше половины пункта пропадает, и сумма плюсов
+    # не добирает до 100.
+    return rounded if rounded > 0 else 1
 
 
-def overall_finding_impacts(
+def _largest_remainder(shares: list[float], total: int) -> list[int]:
+    """Целые доли, которые в сумме дают total."""
+
+    if total <= 0 or not shares:
+        return [0] * len(shares)
+    positive = sum(share for share in shares if share > 0)
+    if positive <= 0:
+        return [0] * len(shares)
+    exact = [share / positive * total if share > 0 else 0.0 for share in shares]
+    floors = [math.floor(value) for value in exact]
+    left = total - sum(floors)
+    ranked = sorted(
+        range(len(exact)),
+        key=lambda index: (exact[index] - floors[index], exact[index], -index),
+        reverse=True,
+    )
+    for index in ranked[:left]:
+        floors[index] += 1
+    return floors
+
+
+def _capped_overall_shares(
     findings: list[tuple[str, int]],
     category_totals: dict[str, int | None],
     category_weights: dict[str, float],
-) -> list[int]:
-    """Прирост общего Score по каждой находке, не больше запаса категории."""
+) -> list[float]:
+    """Вклад находки в общий Score после потолка запаса категории."""
 
     grouped: dict[str, list[int]] = {}
     for index, (category, _points) in enumerate(findings):
         grouped.setdefault(category, []).append(index)
 
-    result = [0] * len(findings)
+    shares = [0.0] * len(findings)
     for category, indexes in grouped.items():
         total = category_totals.get(category)
         weight = category_weights.get(category) or 0.0
@@ -110,8 +139,57 @@ def overall_finding_impacts(
             continue
         factor = min(1.0, headroom / raw_sum)
         for index, points in zip(indexes, raw):
-            result[index] = round(points * factor * weight)
-    return result
+            shares[index] = points * factor * weight
+    return shares
+
+
+def overall_finding_impacts(
+    findings: list[tuple[str, int]],
+    category_totals: dict[str, int | None],
+    category_weights: dict[str, float],
+    overall_score: int | None = None,
+) -> list[int]:
+    """Прирост общего Score по каждой находке.
+
+    Когда веса посчитанных категорий дают единицу, сумма плюсов равна
+    100 минус итог — если находки закрывают недобор. Округление по
+    одной находке пункт не теряет.
+    """
+
+    scored: list[tuple[str, float, int]] = []
+    for category, weight in category_weights.items():
+        total = category_totals.get(category)
+        if total is None or not weight or weight <= 0:
+            continue
+        scored.append((category, float(weight), int(total)))
+
+    shares = _capped_overall_shares(
+        findings, category_totals, category_weights
+    )
+    if not scored:
+        return [0] * len(findings)
+
+    weight_sum = sum(weight for _category, weight, _total in scored)
+    if abs(weight_sum - 1.0) > 1e-3:
+        return [round(share) for share in shares]
+
+    score_float = sum(total * weight for _category, weight, total in scored)
+    computed = round(score_float)
+    gap = max(0, 100 - computed)
+    # На карточке лежит уже сохранённый балл. Он может отличаться на 1
+    # из-за округления, и плюсы должны сойтись именно с ним.
+    if overall_score is not None and abs(int(overall_score) - computed) <= 1:
+        gap = max(0, 100 - int(overall_score))
+    true_gap = sum((100 - total) * weight for _category, weight, total in scored)
+    covered = sum(shares)
+    if gap <= 0 or covered <= 0:
+        return [0] * len(findings)
+    # Небольшой хвост — округление баллов категории, не чужой недобор.
+    if covered + 2.0 >= true_gap:
+        budget = gap
+    else:
+        budget = min(gap, max(0, round(covered)))
+    return _largest_remainder(shares, budget)
 
 
 _SEVERITY_ORDER = [

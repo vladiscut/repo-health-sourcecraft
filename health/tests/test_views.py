@@ -147,12 +147,37 @@ class RepoListTests(TestCase):
         self.assertLess(html.index("sort/high"), html.index("sort/low"))
         self.assertLess(html.index("sort/low"), html.index("sort/ghost"))
         self.assertContains(response, "нет данных")
+        names = [
+            name
+            for item in response.context["items"]
+            if item["score"]
+            for name, _value in item["score"]["categories"]
+        ]
+        self.assertIn("Документация", names)
+        self.assertNotIn("CI/CD", names)
+        self.assertNotIn("Безопасность", names)
+        self.assertContains(response, "PAT владельца")
 
     def test_sort_by_rating(self):
         response = self.client.get(reverse("health:repo-list"), {"sort": "rating"})
         html = response.content.decode()
         self.assertLess(html.index("divkit/divkit"), html.index("acme/tools"))
         self.assertContains(response, "Сбросить")
+        self.assertContains(response, "PAT владельца")
+
+    def test_public_list_omits_owner_only_categories(self):
+        repo = make_repo(org_slug="shown", repo_slug="lib", rating_value=3)
+        _make_completed_scan(repo)
+        response = self.client.get(
+            reverse("health:repo-list"),
+            {"sort": "name", "q": "lib"},
+        )
+        item = response.context["items"][0]
+        names = [name for name, _value in item["score"]["categories"]]
+        self.assertIn("Документация", names)
+        self.assertNotIn("CI/CD", names)
+        self.assertNotIn("Безопасность", names)
+        self.assertNotContains(response, "Безопасность нет")
 
     def test_reset_link_goes_home(self):
         response = self.client.get(
@@ -245,9 +270,33 @@ class RepoDetailAndExportTests(TestCase):
         )
         self.assertFalse(response.context["scan_in_progress"])
         self.assertIsNotNone(response.context["score"])
-        self.assertContains(response, "Нет данных")
-        self.assertContains(response, "перераспределяется")
-        self.assertContains(response, "публичный запуск")
+        labels = [row["label"] for row in response.context["category_rows"]]
+        self.assertNotIn("CI/CD", labels)
+        self.assertNotIn("Безопасность", labels)
+        self.assertIn("Документация", labels)
+        self.assertContains(response, "PAT владельца")
+        self.assertNotContains(response, "публичный запуск")
+        self.assertNotContains(response, "перераспределяется")
+
+        stranger = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"]),
+            {"from": "me"},
+        )
+        stranger_labels = [row["label"] for row in stranger.context["category_rows"]]
+        self.assertNotIn("CI/CD", stranger_labels)
+
+        user = get_user_model().objects.create_user("owner", password="x")
+        grant_access(user, self.public)
+        self.client.force_login(user)
+        owned = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"]),
+            {"from": "me"},
+        )
+        owned_labels = [row["label"] for row in owned.context["category_rows"]]
+        self.assertIn("CI/CD", owned_labels)
+        self.assertIn("Безопасность", owned_labels)
+        self.assertContains(owned, "публичный запуск")
+        self.assertNotContains(owned, "PAT владельца")
 
     def test_detail_shows_no_data_when_scan_measured_nothing(self):
         scan = Scan.objects.create(
@@ -624,11 +673,11 @@ class RepoDetailAndExportTests(TestCase):
         )
 
         response = self.client.get(
-            reverse("health:repo-detail", args=["hidden", "secret"]),
-            follow=True,
+            reverse("health:repo-detail", args=["hidden", "secret"])
         )
 
-        self.assertContains(response, "Не удалось проверить доступ, попробуйте ещё раз.")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Не удалось проверить доступ")
         self.assertTrue(
             UserRepositoryAccess.objects.filter(
                 user=user,
@@ -650,7 +699,17 @@ class RepoDetailAndExportTests(TestCase):
             estimated_score_impact=0,
         )
 
-        page = self.client.get(reverse("health:repo-detail", args=["acme", "tools"]))
+        public = self.client.get(reverse("health:repo-detail", args=["acme", "tools"]))
+        self.assertNotContains(public, "Последний прогон CI")
+        self.assertNotContains(public, page_url)
+
+        user = get_user_model().objects.create_user("owner", password="x")
+        grant_access(user, self.public)
+        self.client.force_login(user)
+        page = self.client.get(
+            reverse("health:repo-detail", args=["acme", "tools"]),
+            {"from": "me"},
+        )
         self.assertContains(page, f'href="{page_url}"')
         self.assertNotContains(page, 'href=".sourcecraft/ci.yaml"')
 
