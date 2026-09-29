@@ -296,20 +296,6 @@ def _build_findings(
             )
         )
 
-    if metrics.total_count == 0:
-        findings.append(
-            Finding(
-                scan=scan,
-                category=CATEGORY,
-                severity=Finding.Severity.LOW,
-                title="В репозитории не используется трекер issues",
-                detail="Не найдено ни одной задачи — оценить категорию Issues невозможно.",
-                recommendation="Заведите issues для известных багов и задач, чтобы отслеживать состояние проекта и дать пользователям канал для обратной связи.",
-                evidence_refs=[],
-                estimated_score_impact=0,
-            )
-        )
-
     if metrics.total_count > 0 and category_score is None:
         findings.append(
             Finding(
@@ -319,8 +305,7 @@ def _build_findings(
                 title="Недостаточно данных для оценки категории Issues",
                 detail=(
                     f"Найдено {metrics.total_count} issues, но ни одна метрика "
-                    "категории не смогла быть рассчитана (проблемы с датами "
-                    "created_at/updated_at/closed_at в ответе API)."
+                    "категории не смогла быть рассчитана"
                 ),
                 recommendation="Проверьте формат дат, отдаваемых SourceCraft API для issues этого репозитория.",
                 evidence_refs=[],
@@ -339,10 +324,51 @@ def run_issues_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
     repo_id = repository.sourcecraft_id
     now = timezone.now()
 
+    exception = ""
+    issues = []
+
     try:
         issues = client.get_issues(repo_id)
     except SourceCraftError as exc:
+        exception = exc
         logger.error(f"Не удалось получить issues для {repository}: {exc}")
+
+    if issues:
+        metrics = _compute_metrics(issues, now)
+        score, data_completeness, submetric_scores = score_issues_category(metrics)
+
+        with transaction.atomic():
+            _save_metric_samples(scan, metrics)
+            _build_findings(scan, metrics, score, submetric_scores)
+
+            health_score, _ = HealthScore.objects.update_or_create(
+                scan=scan,
+                category=CATEGORY,
+                defaults=dict(
+                    total=score,
+                    weight_used=CATEGORY_WEIGHT,
+                    data_completeness=data_completeness,
+                    raw_metrics={
+                        "total_count": metrics.total_count,
+                        "open_count": metrics.open_count,
+                        "closed_count": metrics.closed_count,
+                        "created_30d": metrics.created_30d,
+                        "closed_30d": metrics.closed_30d,
+                        "close_rate_30d": metrics.close_rate_30d,
+                        "stale_count": metrics.stale_count,
+                        "stale_ratio": metrics.stale_ratio,
+                        "median_time_to_close_days": metrics.median_time_to_close_days,
+                        "median_first_response_hours": metrics.median_first_response_hours,
+                        "submetric_scores": submetric_scores,
+                    },
+                ),
+            )
+        return health_score
+    else:
+        error_reason = "Не найдено ни одной задачи — оценить категорию Issues невозможно"
+        if exception:
+            error_reason = str(exception)
+
         with transaction.atomic():
             MetricSample.objects.update_or_create(
                 scan=scan,
@@ -352,7 +378,7 @@ def run_issues_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
                     value=None,
                     is_available=False,
                     source_reference="",
-                    error_reason=str(exc),
+                    error_reason=error_reason,
                 ),
             )
             health_score, _ = HealthScore.objects.update_or_create(
@@ -366,37 +392,6 @@ def run_issues_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
                 ),
             )
         return health_score
-
-    metrics = _compute_metrics(issues, now)
-    score, data_completeness, submetric_scores = score_issues_category(metrics)
-
-    with transaction.atomic():
-        _save_metric_samples(scan, metrics)
-        _build_findings(scan, metrics, score, submetric_scores)
-
-        health_score, _ = HealthScore.objects.update_or_create(
-            scan=scan,
-            category=CATEGORY,
-            defaults=dict(
-                total=score,
-                weight_used=CATEGORY_WEIGHT,
-                data_completeness=data_completeness,
-                raw_metrics={
-                    "total_count": metrics.total_count,
-                    "open_count": metrics.open_count,
-                    "closed_count": metrics.closed_count,
-                    "created_30d": metrics.created_30d,
-                    "closed_30d": metrics.closed_30d,
-                    "close_rate_30d": metrics.close_rate_30d,
-                    "stale_count": metrics.stale_count,
-                    "stale_ratio": metrics.stale_ratio,
-                    "median_time_to_close_days": metrics.median_time_to_close_days,
-                    "median_first_response_hours": metrics.median_first_response_hours,
-                    "submetric_scores": submetric_scores,
-                },
-            ),
-        )
-    return health_score
 
 
 def run(scan_id: int) -> int:
