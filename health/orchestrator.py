@@ -377,22 +377,19 @@ def _scale_finding_impacts(scan: Scan, by_category: dict[str, HealthScore]) -> N
 
 
 def aggregate_scan(scan_id: int) -> dict:
-    print('================')
     scan = Scan.objects.select_related("repository").get(pk=scan_id)
     health_scores = list(HealthScore.objects.filter(scan=scan))
     by_category = {hs.category: hs for hs in health_scores}
-    print(health_scores)
+
     missing_categories = [c for c in ALL_CATEGORIES if c not in by_category]
-    print(missing_categories)
+
     scored = {c: hs for c, hs in by_category.items() if hs.total is not None}
-    print(scored)
     effective_weights = {
         c: CATEGORY_WEIGHTS[c] * hs.data_completeness
         for c, hs in scored.items()
     }
-    print(effective_weights)
     weight_sum = sum(effective_weights.values())
-    print(weight_sum)
+
     if weight_sum > 0:
         overall_score = 0.0
         for category, hs in scored.items():
@@ -406,7 +403,6 @@ def aggregate_scan(scan_id: int) -> dict:
         overall_score = None
 
     no_data_scores = [hs for c, hs in by_category.items() if c not in scored]
-    print(no_data_scores)
     for hs in no_data_scores:
         hs.weight_used = 0.0
     if no_data_scores:
@@ -421,23 +417,20 @@ def aggregate_scan(scan_id: int) -> dict:
         scan.status = Scan.Status.SUCCESS
 
     total_category_weight = sum(CATEGORY_WEIGHTS[c] for c in ALL_CATEGORIES)
-    print(total_category_weight)
     confidence_numerator = sum(
         CATEGORY_WEIGHTS[c] * hs.data_completeness
         for c, hs in by_category.items()
         if c in CATEGORY_WEIGHTS
     )
-    print(confidence_numerator)
     score_confidence = (
         confidence_numerator / total_category_weight
         if total_category_weight > 0
         else 0.0
     )
-    print(score_confidence)
+
     scored_weight = sum(CATEGORY_WEIGHTS[c] for c in scored)
     is_preliminary = scored_weight < PREVIEW_SCORE_WEIGHT_THRESHOLD
-    print(scored_weight)
-    print(is_preliminary)
+
     scan.finished_at = timezone.now()
     scan.raw = {
         **scan.raw,
