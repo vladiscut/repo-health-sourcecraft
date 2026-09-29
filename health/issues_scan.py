@@ -39,11 +39,6 @@ LOOKBACK_DAYS = ISSUES_LOOKBACK_DAYS
 FIRST_RESPONSE_SAMPLE_SIZE = ISSUES_FIRST_RESPONSE_SAMPLE_SIZE
 
 
-def _is_closed(issue: dict[str, Any]) -> bool:
-    state = str(issue.get("state") or issue.get("status") or "").lower()
-    return state in ("closed", "resolved", "done")
-
-
 @dataclass
 class _IssuesMetrics:
     total_count: int = 0
@@ -62,8 +57,6 @@ class _IssuesMetrics:
 
 
 def _compute_metrics(
-    client: SourceCraftClient,
-    repo_id: str,
     issues: list[dict[str, Any]],
     now: datetime,
 ) -> _IssuesMetrics:
@@ -78,9 +71,12 @@ def _compute_metrics(
     for issue in issues:
         created_at = parse_datetime(issue.get("created_at"))
         updated_at = parse_datetime(issue.get("updated_at")) or created_at
-        closed_at = parse_datetime(issue.get("closed_at"))
+        completed_at = parse_datetime(issue.get("completed_at"))
 
-        is_closed = _is_closed(issue) or closed_at is not None
+        status = issue.get("status", {}).get("status_type")
+        is_closed = status in ("completed", "cancelled")
+
+        closed_at = completed_at or (updated_at if is_closed else None)
 
         if is_closed:
             metrics.closed_count += 1
@@ -123,25 +119,17 @@ def _compute_metrics(
         created_at = parse_datetime(issue.get("created_at"))
         if not created_at:
             continue
-        issue_id = issue.get("id") or issue.get("number")
-        if issue_id is None:
-            continue
-        try:
-            comments = client.get_issues_comments(issue_id)
-        except SourceCraftError as exc:
-            logger.info(
-                f"Не удалось получить комментарии issue {issue_id}: {exc}"
-            )
-            continue
-        comment_dates = sorted(
-            filter(
-                None, (parse_datetime(c.get("created_at")) for c in comments)
-            )
+
+        # «Первый ответ» = момент, когда issue впервые взяли в работу.
+        # started_at — переход в in_progress, completed_at — сразу закрыли.
+        first_response_at = (
+            parse_datetime(issue.get("started_at"))
+            or parse_datetime(issue.get("completed_at"))
         )
-        if comment_dates:
-            first_comment = comment_dates[0]
-            if first_comment >= created_at:
-                response_hours.append((first_comment - created_at).total_seconds() / 3600)
+        if first_response_at is None:
+            continue
+        if first_response_at >= created_at:
+            response_hours.append((first_response_at - created_at).total_seconds() / 3600)
 
     metrics.first_response_sample_size = len(sample)
     if response_hours:
@@ -379,7 +367,7 @@ def run_issues_scan(scan: Scan, client: SourceCraftClient) -> HealthScore:
             )
         return health_score
 
-    metrics = _compute_metrics(client, repo_id, issues, now)
+    metrics = _compute_metrics(issues, now)
     score, data_completeness, submetric_scores = score_issues_category(metrics)
 
     with transaction.atomic():
