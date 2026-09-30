@@ -41,14 +41,6 @@ CATEGORY = MetricSample.Category.CODE_HEALTH
 
 CATEGORY_WEIGHT = CATEGORY_WEIGHTS[CATEGORY]
 
-
-def _weights_for(include_todo_age: bool) -> dict[str, float]:
-    return (
-        CODE_HEALTH_SUBMETRIC_WEIGHTS
-        if include_todo_age
-        else CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE
-    )
-
 CODE_HEALTH_MAX_TODO_SCAN_FILES = 30
 CODE_HEALTH_FILE_MAX_CHARS = 50_000
 
@@ -98,7 +90,9 @@ BINARY_JUNK_SUFFIXES = (
     ".exe", ".jar", ".war", ".ear", ".min.js", ".min.css", ".map",
 )
 
-DATA_ONLY_SUFFIXES = (".csv", ".tsv", ".json", ".parquet", ".xlsx", ".xls", ".jsonl")
+DATA_ONLY_SUFFIXES = (
+    ".csv", ".tsv", ".json", ".parquet", ".xlsx", ".xls", ".jsonl"
+)
 
 SOURCE_CODE_SUFFIXES = (
     ".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".java", ".kt",
@@ -107,6 +101,14 @@ SOURCE_CODE_SUFFIXES = (
 )
 
 TODO_MARKER_RE = re.compile(r"\b(TODO|FIXME|HACK|XXX)\b", re.IGNORECASE)
+
+
+def _weights_for(include_todo_age: bool) -> dict[str, float]:
+    return (
+        CODE_HEALTH_SUBMETRIC_WEIGHTS
+        if include_todo_age
+        else CODE_HEALTH_SUBMETRIC_WEIGHTS_WITHOUT_TODO_AGE
+    )
 
 
 @dataclass

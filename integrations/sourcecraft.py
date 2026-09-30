@@ -356,13 +356,17 @@ class SourceCraftClient(SourceCraftAPI):
 
     def get_billing_organization(self) -> dict[str, Any] | None:
         try:
-            return self._request("GET", "/user/code-assist-billing-org") or None
+            return self._request(
+                "GET", "/user/code-assist-billing-org"
+            ) or None
         except SourceCraftError as exc:
             if exc.status_code in {404, 403}:
                 return None
             raise
 
-    def list_organization_repositories(self, org_slug: str) -> list[dict[str, Any]]:
+    def list_organization_repositories(
+        self, org_slug: str
+    ) -> list[dict[str, Any]]:
         return list(
             self._paginate(
                 f"/orgs/{org_slug}/repos",
@@ -476,9 +480,11 @@ class SourceCraftClient(SourceCraftAPI):
         data = self._request(
             "GET", f"/repos/id:{repo_id}/branches", params=params
         )
-        branches = data.get(collection_key)
-        if branches:
-            return branches[0].get("commit", {}).get("hash")
+        hash = [
+            i.get("commit", {}).get("hash")
+            for i in data.get(collection_key, []) if i.get("name") == branch
+        ]
+        return hash[0] if hash else None
 
 
 def _quote_repo_path(relative_path: str) -> str:

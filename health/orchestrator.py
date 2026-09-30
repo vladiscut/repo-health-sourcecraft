@@ -116,7 +116,7 @@ def _claim_pending_or_create_running(
         pending.status = Scan.Status.RUNNING
         pending.triggered_by = triggered_by
         pending.triggered_by_user_id = user_id
-        pending.commit_sha_at_analysis = commit_sha or ""
+        pending.commit_sha_at_analysis = commit_sha
         pending.save(
             update_fields=[
                 "status",
@@ -133,7 +133,7 @@ def _claim_pending_or_create_running(
             status=Scan.Status.RUNNING,
             triggered_by=triggered_by,
             triggered_by_user_id=user_id,
-            commit_sha_at_analysis=commit_sha or "",
+            commit_sha_at_analysis=commit_sha,
         )
     except IntegrityError as exc:
         raise ActiveScanExistsError(
@@ -273,6 +273,13 @@ def start_repository_scan(
         return _create_empty_repo_scan(repository, triggered_by, user_id)
 
     current_hash = _get_current_commit_hash(repository)
+    if not current_hash:
+        logger.info(
+            f"Хеш ветки по умолчанию недоступен. Пропускаем пересчёт "
+            f"repo={repository.sourcecraft_id}"
+        )
+        return _create_empty_repo_scan(repository, triggered_by, user_id)
+
     last_commit = repository.last_commit_sha_processed
 
     if (
@@ -301,7 +308,7 @@ def start_repository_scan(
         repository,
         triggered_by,
         user_id,
-        current_hash or last_commit or "",
+        current_hash,
     )
 
     category_tasks = [

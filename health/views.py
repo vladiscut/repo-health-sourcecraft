@@ -9,7 +9,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views import View
 from django.views.generic import DetailView, ListView
 
-from core.celery import SCHEDULE_QUEUE_NAME
+from core.celery import USER_QUEUE_NAME
 from health.access_check import (
     ACCESS_DENIED_TEXT,
     PAGE_UNAVAILABLE_TEXT,
@@ -379,7 +379,7 @@ class RepoDetailView(RepositoryAccessMixin, DetailView):
                     "user_id": None,
                     "force": True,
                 },
-                queue=SCHEDULE_QUEUE_NAME,
+                queue=USER_QUEUE_NAME,
             )
             messages.info(request, "Плановый скан поставлен в очередь.")
             return _repo_detail_redirect(request, repo.org_slug, repo.repo_slug)
